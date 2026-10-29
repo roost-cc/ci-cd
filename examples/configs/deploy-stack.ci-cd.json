@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "project": {
+    "name": "deploy-stack-dry-run"
+  },
+  "languages": [],
+  "targets": {
+    "local": {},
+    "staging": {},
+    "production": {}
+  },
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "actions": {
+    "deploy": {
+      "target_required": true,
+      "commands": ["printf 'deploy %s on %s\\n' \"$CI_TARGET\" \"$CI_PLATFORM\""]
+    },
+    "stack": {
+      "target_required": true,
+      "commands": ["printf 'stack %s\\n' \"$CI_TARGET\""]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "go-basic-repo"
+  },
+  "languages": ["go"],
+  "use_toolchains": ["go:standard"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {}
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "release-basic"
+  },
+  "languages": [],
+  "actions": {
+    "release": {
+      "commands": ["./scripts/package.sh"],
+      "artifacts": [{ "path": "dist/release-basic.tar.gz" }],
+      "sbom_source": "."
+    }
+  }
+}

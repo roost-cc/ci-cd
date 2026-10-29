@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "project": {
+    "name": "detection-disabled"
+  },
+  "auto_detect_toolchains": false,
+  "actions": {
+    "test": {
+      "commands": ["echo explicit-test-ok"]
+    }
+  }
+}

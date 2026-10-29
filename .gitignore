@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+coverage/
+.artifacts/
+tests/fixtures/*/dist/
+
+# Backlog workon lock files and activity logs
+.workon.lock
+.bl/

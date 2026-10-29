@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "python-basic-repo"
+  },
+  "languages": ["python"],
+  "use_toolchains": ["python:uv-ruff-pytest"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {}
+}

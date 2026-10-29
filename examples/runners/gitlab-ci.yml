@@ -1,0 +1,18 @@
+ci:
+  image: node:26
+  stage: test
+  script:
+    - git clone --depth=1 --branch v1 https://example.invalid/ci-cd.git .ci-cd
+    - mkdir -p "$CI_PROJECT_DIR/.artifacts"
+    - ./.ci-cd/bin/ci run test --target ci --platform linux/amd64
+  variables:
+    CI_EVENT: '$CI_PIPELINE_SOURCE'
+    CI_BRANCH: '$CI_COMMIT_REF_NAME'
+    CI_COMMIT_SHA: '$CI_COMMIT_SHA'
+    CI_PR_TITLE: '$CI_MERGE_REQUEST_TITLE'
+    CI_ARTIFACTS_DIR: '$CI_PROJECT_DIR/.artifacts'
+    CI_TARGET: 'ci'
+    CI_PLATFORM: 'linux/amd64'
+  artifacts:
+    paths:
+      - .artifacts/

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-failing"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "lint": {
+      "commands": ["echo gate-ran-lint"]
+    },
+    "test": {
+      "commands": ["false"]
+    }
+  }
+}

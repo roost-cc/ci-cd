@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "project": {
+    "name": "generic-command"
+  },
+  "languages": [],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "actions": {
+    "format": {
+      "commands": ["printf 'format\\n'"]
+    },
+    "lint": {
+      "commands": ["NODE_ENV=test printf 'lint\\n'"]
+    },
+    "deploy": {
+      "commands": ["./scripts/check.sh \"$CI_TARGET\""]
+    },
+    "test": {
+      "commands": ["mkdir -p coverage && printf 'generic-ok\\n' > coverage/result.txt"],
+      "artifacts": ["coverage/result.txt"]
+    }
+  }
+}

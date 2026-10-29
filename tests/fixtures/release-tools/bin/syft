@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+
+for arg in "$@"; do
+  case "$arg" in
+    cyclonedx-json=*)
+      output=${arg#cyclonedx-json=}
+      mkdir -p "$(dirname "$output")"
+      printf '{"bomFormat":"CycloneDX","specVersion":"1.6"}\n' > "$output"
+      exit 0
+      ;;
+  esac
+done
+
+printf 'missing cyclonedx-json output\n' >&2
+exit 2

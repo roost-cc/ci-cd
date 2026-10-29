@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+log=${CI_RELEASE_TEST_LOG:?}
+printf 'gh %s\n' "$*" >> "$log"

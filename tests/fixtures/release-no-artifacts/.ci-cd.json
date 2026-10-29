@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "project": {
+    "name": "release-no-artifacts"
+  },
+  "languages": [],
+  "actions": {
+    "release": {
+      "commands": ["mkdir -p dist && printf 'payload\\n' > dist/app.tar.gz"]
+    }
+  }
+}

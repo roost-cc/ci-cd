@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+set -eu
+
+signature=
+certificate=
+asset=
+while test "$#" -gt 0; do
+  case "$1" in
+    --output-signature)
+      signature=$2
+      shift 2
+      ;;
+    --output-certificate)
+      certificate=$2
+      shift 2
+      ;;
+    --yes|sign-blob)
+      shift
+      ;;
+    *)
+      asset=$1
+      shift
+      ;;
+  esac
+done
+
+test -n "$asset"
+test -n "$signature"
+test -n "$certificate"
+printf 'signed %s\n' "$asset" > "$signature"
+printf 'certificate %s\n' "$asset" > "$certificate"

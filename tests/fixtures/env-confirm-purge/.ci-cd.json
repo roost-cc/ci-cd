@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "project": {
+    "name": "env-confirm-purge"
+  },
+  "languages": [],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "actions": {
+    "test": {
+      "commands": ["printf 'ci=%s\\n' \"$(pnpm config get ci)\""]
+    }
+  }
+}

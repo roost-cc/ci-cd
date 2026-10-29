@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-vulns-failing"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "vulns": {}
+}

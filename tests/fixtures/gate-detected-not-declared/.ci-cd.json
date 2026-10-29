@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-detected-not-declared"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"]
+}

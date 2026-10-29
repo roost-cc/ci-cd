@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "example-service"
+  },
+  "languages": [],
+  "actions": {
+    "release": {
+      "commands": ["mkdir -p dist && tar -czf dist/example-service.tar.gz README.md"],
+      "artifacts": [{ "path": "dist/example-service.tar.gz" }],
+      "sbom_source": "."
+    }
+  }
+}

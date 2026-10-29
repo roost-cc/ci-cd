@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "project": {
+    "name": "auto-node"
+  },
+  "auto_detect_toolchains": true,
+  "targets": {
+    "ci": {}
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "lint": "node -e \"console.log('lint')\""
+  }
+}

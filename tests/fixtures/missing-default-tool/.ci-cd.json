@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "project": {
+    "name": "missing-default-tool"
+  },
+  "use_toolchains": ["team:missing-tool"],
+  "toolchains": {
+    "team:missing-tool": {
+      "actions": {
+        "lint": {
+          "required_tools": ["definitely-missing-ci-cd-tool"],
+          "commands": ["definitely-missing-ci-cd-tool lint"]
+        }
+      }
+    }
+  }
+}

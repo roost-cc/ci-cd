@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project": {
+    "name": "release-missing-tool"
+  },
+  "languages": [],
+  "actions": {
+    "release": {
+      "commands": ["mkdir -p dist && printf 'payload\\n' > dist/app.tar.gz"],
+      "artifacts": ["dist/app.tar.gz"]
+    }
+  }
+}

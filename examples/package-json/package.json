@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "format": ".ci-cd/bin/ci run format",
+    "lint": ".ci-cd/bin/ci run lint",
+    "test": ".ci-cd/bin/ci run test",
+    "build": ".ci-cd/bin/ci run build",
+    "deploy": ".ci-cd/bin/ci run deploy --target staging"
+  }
+}

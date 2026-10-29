@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GHSA-35jh-r3h4-6jhm"
+ignoreUntil = 2099-01-01
+reason = "Fixture: accepted finding"

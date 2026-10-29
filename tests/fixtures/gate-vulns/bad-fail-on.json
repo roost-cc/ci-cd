@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-vulns"
+  },
+  "vulns": {
+    "fail_on": "severe"
+  }
+}

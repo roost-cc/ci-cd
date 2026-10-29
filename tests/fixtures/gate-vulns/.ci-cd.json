@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-vulns"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "commands": ["echo gate-ran-test"]
+    }
+  },
+  "vulns": {
+    "fail_on": "critical"
+  }
+}

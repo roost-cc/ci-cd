@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "@DIR@/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "left-pad",
+            "version": "1.0.0",
+            "ecosystem": "npm"
+          },
+          "groups": [
+            {
+              "ids": ["GHSA-0000-0000-0000"],
+              "aliases": [],
+              "max_severity": ""
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "GHSA-0000-0000-0000",
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "left-pad"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "1.0.1"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

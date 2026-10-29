@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git clone --depth=1 --branch v1 https://example.invalid/ci-cd.git .ci-cd
+      - run: mkdir -p "$RUNNER_TEMP/artifacts"
+      - env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BRANCH: ${{ github.ref_name }}
+          CI_COMMIT_SHA: ${{ github.sha }}
+          CI_PR_TITLE: ${{ github.event.pull_request.title }}
+          CI_ARTIFACTS_DIR: ${{ runner.temp }}/artifacts
+          CI_TARGET: ci
+          CI_PLATFORM: linux/amd64
+        run: ./.ci-cd/bin/ci run test --target ci --platform linux/amd64

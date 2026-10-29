@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "project": {
+    "name": "toolchain-selected"
+  },
+  "use_toolchains": ["team:portable"],
+  "targets": {
+    "ci": {}
+  },
+  "toolchains": {
+    "team:portable": {
+      "detect": {
+        "files": ["team.project"]
+      },
+      "actions": {
+        "format": {
+          "commands": ["printf 'profile-format\\n'"]
+        },
+        "lint": {
+          "commands": ["printf 'profile-lint\\n'"]
+        }
+      }
+    }
+  },
+  "actions": {
+    "lint": {
+      "commands": ["printf 'explicit-lint\\n'"]
+    }
+  }
+}

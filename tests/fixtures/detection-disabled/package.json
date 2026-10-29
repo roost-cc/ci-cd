@@ -1,0 +1,7 @@
+{
+  "name": "detection-disabled",
+  "private": true,
+  "scripts": {
+    "lint": "node -e \"process.exit(1)\""
+  }
+}

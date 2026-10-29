@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "lint": "node scripts/check.js lint",
+    "test": "node scripts/check.js test",
+    "build": "node scripts/check.js build"
+  }
+}

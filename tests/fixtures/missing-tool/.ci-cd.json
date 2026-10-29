@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "project": {
+    "name": "missing-tool"
+  },
+  "actions": {
+    "test": {
+      "required_tools": ["definitely-not-a-real-tool"],
+      "commands": ["definitely-not-a-real-tool --version"]
+    }
+  }
+}

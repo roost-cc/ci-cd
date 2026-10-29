@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-empty-actions"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"]
+}

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ci-cd.schema.json",
+  "title": "ci-cd consumer config",
+  "type": "object",
+  "required": ["version", "project"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "languages": {
+      "type": "array",
+      "items": { "enum": ["node", "typescript", "python", "go"] }
+    },
+    "use_toolchains": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "examples": [["python:uv-ruff-pytest"], ["node:pnpm", "go:standard"]]
+    },
+    "auto_detect_toolchains": {
+      "type": "boolean",
+      "default": true,
+      "description": "Toolchain auto-detection runs by default. Set false to disable detection for pure-explicit configs; false with no actions and no use_toolchains is a validation error."
+    },
+    "toolchains": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/toolchain" }
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "examples": [{ "local": {}, "ci": {}, "staging": {}, "production": {} }]
+    },
+    "platforms": {
+      "oneOf": [
+        { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      ],
+      "examples": [["linux/amd64", "linux/arm64"]]
+    },
+    "vulns": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Opt the pre-push gate (bin/ci gate) into the osv-scanner lockfile scan (bin/ci vulns). Present = the gate runs it after the declared actions.",
+      "properties": {
+        "fail_on": {
+          "enum": ["critical", "high", "medium", "low"],
+          "default": "high",
+          "description": "Lowest severity that fails the scan. Findings below it are reported, not blocking."
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/action" },
+      "properties": {
+        "format": { "$ref": "#/$defs/action" },
+        "lint": { "$ref": "#/$defs/action" },
+        "test": { "$ref": "#/$defs/action" },
+        "build": { "$ref": "#/$defs/action" },
+        "package": { "$ref": "#/$defs/action" },
+        "deploy": { "$ref": "#/$defs/action" },
+        "release": { "$ref": "#/$defs/action" },
+        "stack": { "$ref": "#/$defs/action" }
+      }
+    }
+  },
+  "$defs": {
+    "toolchain": {
+      "type": "object",
+      "required": ["actions"],
+      "additionalProperties": true,
+      "properties": {
+        "detect": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/action" }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "custom": { "type": "boolean" },
+        "commands": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "command": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": true
+              }
+            ]
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "required_env": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "working_directory": { "type": "string" },
+        "sbom_source": { "type": "string" },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "name": { "type": "string" },
+                  "optional": { "type": "boolean" }
+                },
+                "additionalProperties": true
+              }
+            ]
+          }
+        },
+        "required_tools": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "skip_if_missing": { "type": "boolean" },
+        "target_required": { "type": "boolean" },
+        "helpers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "node": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["script"],
+                "properties": {
+                  "manager": { "enum": ["npm", "pnpm", "yarn", "bun"] },
+                  "script": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": true
+              }
+            },
+            "python": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["tool"],
+                "properties": {
+                  "tool": {
+                    "enum": ["uv", "pip", "ruff", "mypy", "pytest", "python", "python3"]
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "go": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["tool"],
+                "properties": {
+                  "tool": { "enum": ["go", "gofmt", "go vet", "staticcheck"] },
+                  "args": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

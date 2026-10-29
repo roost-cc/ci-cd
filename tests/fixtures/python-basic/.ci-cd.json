@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "project": {
+    "name": "python-basic"
+  },
+  "languages": ["python"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "required_tools": ["python3"],
+      "helpers": {
+        "python": [
+          {
+            "tool": "python3",
+            "args": ["-m", "unittest", "discover", "-s", "tests"]
+          }
+        ]
+      }
+    }
+  }
+}

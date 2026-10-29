@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "@DIR@/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "lodash",
+            "version": "4.17.15",
+            "ecosystem": "npm"
+          },
+          "groups": [
+            {
+              "ids": ["GHSA-29mw-wpgm-hmr9"],
+              "aliases": ["CVE-2020-28500"],
+              "max_severity": "5.3"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "GHSA-29mw-wpgm-hmr9",
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "lodash"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "4.17.21"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

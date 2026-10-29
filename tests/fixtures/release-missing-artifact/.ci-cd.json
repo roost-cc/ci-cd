@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project": {
+    "name": "release-missing-artifact"
+  },
+  "languages": [],
+  "actions": {
+    "release": {
+      "commands": ["mkdir -p dist"],
+      "artifacts": ["dist/app.tar.gz"]
+    }
+  }
+}

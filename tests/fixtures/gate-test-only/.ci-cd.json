@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-test-only"
+  },
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "commands": ["echo gate-ran-test"]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "project": {
+    "name": "unknown-toolchain"
+  },
+  "use_toolchains": ["team:does-not-exist"]
+}

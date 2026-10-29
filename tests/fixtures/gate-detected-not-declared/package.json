@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "test": "echo gate-detected-test-should-not-run"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "project": {
+    "name": "generic-command-repo"
+  },
+  "languages": [],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "actions": {
+    "format": {
+      "commands": ["printf 'format\\n'"]
+    },
+    "lint": {
+      "commands": ["printf 'lint\\n'"]
+    },
+    "test": {
+      "commands": ["mkdir -p coverage && printf 'ok\\n' > coverage/result.txt"],
+      "artifacts": ["coverage/result.txt"]
+    }
+  }
+}

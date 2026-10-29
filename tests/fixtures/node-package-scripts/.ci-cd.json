@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "project": {
+    "name": "node-package-scripts"
+  },
+  "languages": ["node"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "lint": {
+      "required_tools": ["npm"],
+      "helpers": {
+        "node": [{ "manager": "npm", "script": "lint" }]
+      }
+    },
+    "test": {
+      "required_tools": ["npm"],
+      "helpers": {
+        "node": [{ "manager": "npm", "script": "test" }]
+      }
+    },
+    "build": {
+      "required_tools": ["npm"],
+      "helpers": {
+        "node": [{ "manager": "npm", "script": "build" }]
+      }
+    }
+  }
+}

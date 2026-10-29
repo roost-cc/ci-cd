@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "project": {
+    "name": "go-basic"
+  },
+  "languages": ["go"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "env": {
+        "GOCACHE": "/tmp/ci-cd-go-cache"
+      },
+      "required_tools": ["go"],
+      "helpers": {
+        "go": [{ "tool": "go", "args": ["test", "./..."] }]
+      }
+    }
+  }
+}

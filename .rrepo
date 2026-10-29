@@ -1,0 +1,5 @@
+{
+  "profile": "public-tool",
+  "overrides": {},
+  "test_command": "sh tests/run.sh"
+}

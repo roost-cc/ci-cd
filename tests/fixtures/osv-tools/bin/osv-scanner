@@ -1,0 +1,64 @@
+#!/usr/bin/env sh
+# Fake osv-scanner for tests/run.sh: no network, canned output.
+#
+# The scanned directory is the last argument. Output comes from files in it:
+#   osv-output.json          canned JSON (absent: exit 128, "no lockfiles")
+#   osv-output.ignored.json  used instead when --config is passed (models
+#                            osv-scanner filtering out the ignored findings)
+# @DIR@ in the canned JSON is replaced with the scanned directory. Exit is 1
+# when the JSON carries a max_severity (a finding), else 0.
+#
+# Environment:
+#   FAKE_OSV_LOG            append each scan's arguments to this file
+#   FAKE_OSV_VERSION        what --version reports (default 2.6.0)
+#   FAKE_OSV_DOWNLOAD_FAIL  fail any --download-offline-databases run
+#   FAKE_OSV_NO_DB          fail any --offline run (no local database)
+#   FAKE_OSV_EXIT           force this exit code after printing output
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'osv-scanner version: %s\n' "${FAKE_OSV_VERSION:-2.6.0}"
+  exit 0
+fi
+
+if [ -n "${FAKE_OSV_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$FAKE_OSV_LOG"
+fi
+
+dir=
+config=0
+download=0
+offline=0
+for arg in "$@"; do
+  dir=$arg
+  case $arg in
+  --config) config=1 ;;
+  --download-offline-databases) download=1 ;;
+  --offline) offline=1 ;;
+  esac
+done
+
+if [ "$download" = 1 ] && [ -n "${FAKE_OSV_DOWNLOAD_FAIL:-}" ]; then
+  echo 'Error during extraction: (extracting as vulnmatch/osvlocal) unable to fetch OSV database: could not retrieve OSV database archive: connection refused' >&2
+  printf '{"results": []}\n'
+  exit 127
+fi
+if [ "$offline" = 1 ] && [ -n "${FAKE_OSV_NO_DB:-}" ]; then
+  echo 'Error during extraction: (extracting as vulnmatch/osvlocal) unable to fetch OSV database: no offline version of the OSV database is available' >&2
+  printf '{"results": []}\n'
+  exit 127
+fi
+
+output=$dir/osv-output.json
+if [ "$config" = 1 ] && [ -f "$dir/osv-output.ignored.json" ]; then
+  output=$dir/osv-output.ignored.json
+fi
+if [ ! -f "$output" ]; then
+  echo 'No package sources found, --help for usage information.' >&2
+  exit 128
+fi
+
+sed "s#@DIR@#$dir#g" "$output"
+code=0
+if rg --quiet --fixed-strings max_severity "$output"; then code=1; fi
+exit "${FAKE_OSV_EXIT:-$code}"

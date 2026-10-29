@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "node-package-repo"
+  },
+  "languages": ["node"],
+  "use_toolchains": ["node:npm"],
+  "targets": {
+    "local": {},
+    "ci": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {}
+}
