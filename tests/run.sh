@@ -348,7 +348,7 @@ assert_contains /tmp/ci-cd-vulns-new-eco.out "no findings at or above high"
 OLD_DB_CACHE=$(fresh_cache old-db)
 mkdir -p "$OLD_DB_CACHE/ci-cd/osv/osv-scalibr/npm"
 touch "$OLD_DB_CACHE/ci-cd/osv/osv-scalibr/npm/all.zip"
-touch -d '3 days ago' "$OLD_DB_CACHE/ci-cd/osv/last-download"
+touch -d '72 hours ago' "$OLD_DB_CACHE/ci-cd/osv/last-download"
 FAKE_OSV_DOWNLOAD_FAIL=1 run_vulns vulns-medium "$OLD_DB_CACHE" >/tmp/ci-cd-vulns-old-db.out 2>&1
 assert_contains /tmp/ci-cd-vulns-old-db.out "ci-cd: vulns: OSV database is 72h old (refresh failed)"
 assert_contains "$OSV_LOG" "--offline $ROOT/tests/fixtures/vulns-medium"
@@ -450,7 +450,7 @@ assert_json "$JSON_DIR/refresh.json" 'r.db_refreshed === true && r.db_age_hours 
 STALE_DB_CACHE="$(fresh_cache json-stale-db)"
 mkdir -p "$STALE_DB_CACHE/ci-cd/osv/osv-scalibr/npm"
 touch "$STALE_DB_CACHE/ci-cd/osv/osv-scalibr/npm/all.zip"
-touch -d '3 days ago' "$STALE_DB_CACHE/ci-cd/osv/last-download"
+touch -d '72 hours ago' "$STALE_DB_CACHE/ci-cd/osv/last-download"
 env FAKE_OSV_DOWNLOAD_FAIL=1 PATH="$OSV_PATH" XDG_CACHE_HOME="$STALE_DB_CACHE" "$ROOT/bin/ci" vulns \
   --working-directory "$ROOT/tests/fixtures/vulns-medium" --json "$JSON_DIR/stale-db.json" >/dev/null 2>&1
 assert_json "$JSON_DIR/stale-db.json" 'r.status === "clean" && r.db_refreshed === false && r.db_age_hours === 72'
