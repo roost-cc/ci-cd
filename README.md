@@ -179,7 +179,8 @@ what the shared pre-push hook invokes, so no action name is hardcoded in the
 scaffold.
 
 `vulns` scans the checkout's lockfiles for known vulnerabilities with
-osv-scanner. It needs no `.ci-cd.json`; see
+osv-scanner and fails on what the branch introduces. It needs no `.ci-cd.json`;
+see
 [Vulnerability Scan](#vulnerability-scan).
 
 `--working-directory` points at the consumer repo root when invoking `ci-cd`
@@ -190,7 +191,7 @@ root.
 ## Vulnerability Scan
 
 ```sh
-bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--json <path>]
+bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>]
 ```
 
 `vulns` scans every lockfile in a checkout, transitive dependencies included
@@ -215,11 +216,24 @@ unchanged:
 **Threshold.** A finding's severity comes from its group's `max_severity` (a
 CVSS base score): `critical` is 9.0 and up, `high` 7.0 and up, `medium` 4.0 and
 up, `low` above 0. A finding with **no** score counts as `high`, so it fails the
-default gate until someone triages it. Findings at or above the threshold fail
-the scan, one line each (lockfile, package, version, OSV/GHSA/CVE IDs,
-severity, fixed versions if known). Findings below it print under a "reported,
-not blocking" heading. The threshold is `--fail-on`, else `vulns.fail_on` from
-the config, else `high`.
+default gate until someone triages it. `new` findings at or above the threshold
+fail the scan, one line each (lockfile, package, version, OSV/GHSA/CVE IDs,
+severity, fixed versions if known, advisory date). `new` findings below it print
+under a "reported, not blocking" heading. The threshold is `--fail-on`, else
+`vulns.fail_on` from the config, else `high`.
+
+**Only what the branch introduces blocks.** When there are findings, the scan
+also runs on the merge base of `HEAD` and `--base <ref>`, else `origin/HEAD`,
+else `origin/main`, unpacked with `git archive` to a temporary directory, with
+the branch's `osv-scanner.toml` and the same OSV database. A finding is
+`existing` when the base has that lockfile and package and shares an advisory ID
+with it; the version does not count, so moving between two versions under one
+advisory adds nothing. Anything else is `new`, whether or not a fix exists. An
+`existing` finding never blocks, at any severity: it prints in a group of its
+own and the summary counts `new` and `existing`. It needs no ignore entry. If the
+base cannot be compared (not a git checkout, no base ref, no merge base, a failed
+archive or scan), the scan logs why, every finding counts as `new`, and the scan
+blocks as if there were no base.
 
 **Accepted findings** live in one `osv-scanner.toml` at the repo root, as
 osv-scanner `[[IgnoredVulns]]` entries:
@@ -269,6 +283,12 @@ writes one.
   "scanned_at": "2026-10-02T06:00:00.000Z",
   "db_refreshed": false,
   "db_age_hours": 3,
+  "base": {
+    "ref": "origin/HEAD",
+    "commit": "5fbe7b0c1a2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+    "compared": true,
+    "reason": null
+  },
   "findings": [
     {
       "lockfile": "sub/package-lock.json",
@@ -278,8 +298,10 @@ writes one.
       "ids": ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"],
       "max_severity": "8.1",
       "severity": "high",
+      "status": "new",
       "blocking": true,
-      "fixed": ["4.17.21"]
+      "fixed": ["4.17.21"],
+      "advisory_published": "2021-02-15T13:15:00Z"
     }
   ],
   "error": null
@@ -289,7 +311,7 @@ writes one.
 | `status`       | Meaning                                                                                                               | Exit |
 | -------------- | --------------------------------------------------------------------------------------------------------------------- | ---- |
 | `clean`        | No finding at or above the threshold (`findings` may list non-blocking ones)                                          | 0    |
-| `findings`     | At least one finding at or above the threshold                                                                        | 1    |
+| `findings`     | At least one finding at or above the threshold, `new` or `existing`; exit 1 only when one is `blocking`               | 0/1  |
 | `no-lockfiles` | osv-scanner found nothing to scan                                                                                     | 0    |
 | `skipped`      | No OSV database and the download failed; `error` says so                                                              | 0    |
 | `error`        | osv-scanner missing, wrong version or failed; unparsable output; bad config or ignore file; `error` holds the message | 1/2  |
@@ -299,14 +321,20 @@ it). `db_refreshed` is `true` when this scan refreshed the OSV database.
 `db_age_hours` is the age in whole hours of the database the scan used (`0`
 right after a refresh, the stamp's age otherwise, as the "refresh failed"
 warning reports it), or `null` when no database was used; a `clean` result
-from a days-old database shows here. Each
-finding carries the lockfile (relative to the working directory), package,
-version, osv-scanner's `ecosystem`, the IDs the text output shows,
+from a days-old database shows here. `base` says what the scan compared with:
+`ref`, the merge-base `commit`, `compared`, and `reason` when `compared` is
+`false` (`no findings to compare` when the branch had none, so no base was
+scanned). Each finding carries the lockfile (relative to the working directory),
+package, version, osv-scanner's `ecosystem`, the IDs the text output shows,
 `max_severity` (the CVSS score string, or `null`), `severity` (the level above),
-`blocking` (at or above the threshold) and `fixed` (known fixed versions).
-Findings below the threshold are included with `blocking: false`.
+`status` (`new` or `existing`), `blocking` (`new` and at or above the threshold),
+`fixed` (known fixed versions) and `advisory_published` (the earliest OSV
+`published` date of its advisories, or `null`). Non-blocking findings are
+included with `blocking: false`.
 
-For consumers: `status` is relative to `fail_on`, which a repo's
+For consumers: the exit code comes from `blocking` alone, so a scan of the base
+branch itself exits 0 with `status: "findings"` when it has findings at or above
+the threshold. `status` is relative to `fail_on`, which a repo's
 `vulns.fail_on` can change, so a caller that needs one policy across repos
 passes `--fail-on` or applies its own threshold to `findings[].severity`. Only
 `clean` and `no-lockfiles` mean a scan ran and passed; `skipped` exits 0 but
@@ -314,11 +342,11 @@ scanned nothing.
 
 Exit codes:
 
-| Exit | Meaning                                                                      |
-| ---- | ---------------------------------------------------------------------------- |
-| 0    | No finding at or above the threshold; no lockfiles; or no database (skipped) |
-| 1    | Findings at or above the threshold; osv-scanner missing or failed            |
-| 2    | An `[[IgnoredVulns]]` entry is missing `reason` or `ignoreUntil`             |
+| Exit | Meaning                                                                            |
+| ---- | ---------------------------------------------------------------------------------- |
+| 0    | No `new` finding at or above the threshold; no lockfiles; or no database (skipped) |
+| 1    | `new` findings at or above the threshold; osv-scanner missing or failed            |
+| 2    | An `[[IgnoredVulns]]` entry is missing `reason` or `ignoreUntil`                   |
 
 ## Toolchain Profiles
 

@@ -242,6 +242,11 @@ assert_contains /tmp/ci-cd-purge-caller.out "ci=false"
 printf 'test: vulns (osv-scanner, faked: no network)\n'
 OSV_PATH="$ROOT/tests/fixtures/osv-tools/bin:$PATH"
 OSV_LOG="$TMP_ROOT/osv.log"
+# The fixtures sit inside this repo's history. Git stops looking at tests/, so
+# here they are not a git checkout; `vulns compares` builds real histories.
+GIT_CEILING_DIRECTORIES=$(CDPATH= cd -- "$ROOT/tests" && pwd -P)
+export GIT_CEILING_DIRECTORIES
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 # Each case gets its own cache with a fresh stamp, so scans run --offline.
 fresh_cache() {
   cache="$TMP_ROOT/cache-$1"
@@ -261,7 +266,7 @@ run_vulns() {
 if run_vulns vulns-high "$(fresh_cache high)" >/tmp/ci-cd-vulns-high.out 2>&1; then
   fail "vulns must fail on a high finding"
 fi
-assert_contains /tmp/ci-cd-vulns-high.out "1 finding(s) at or above high"
+assert_contains /tmp/ci-cd-vulns-high.out "1 new finding(s) at or above high"
 assert_contains /tmp/ci-cd-vulns-high.out "sub/package-lock.json: lodash@4.17.15 GHSA-35jh-r3h4-6jhm CVE-2021-23337 severity=high (CVSS 8.1) fixed=4.17.21"
 assert_contains "$OSV_LOG" "scan source -r --format json --offline $ROOT/tests/fixtures/vulns-high"
 
@@ -269,13 +274,13 @@ assert_contains "$OSV_LOG" "scan source -r --format json --offline $ROOT/tests/f
 run_vulns vulns-medium "$(fresh_cache medium)" >/tmp/ci-cd-vulns-medium.out 2>&1
 assert_contains /tmp/ci-cd-vulns-medium.out "reported, not blocking (below high)"
 assert_contains /tmp/ci-cd-vulns-medium.out "lodash@4.17.15 GHSA-29mw-wpgm-hmr9 CVE-2020-28500 severity=medium (CVSS 5.3)"
-assert_contains /tmp/ci-cd-vulns-medium.out "no findings at or above high"
+assert_contains /tmp/ci-cd-vulns-medium.out "no new findings at or above high"
 
 # --fail-on medium makes it blocking.
 if run_vulns vulns-medium "$(fresh_cache medium-fail)" --fail-on medium >/tmp/ci-cd-vulns-medium-fail.out 2>&1; then
   fail "vulns --fail-on medium must fail on a medium finding"
 fi
-assert_contains /tmp/ci-cd-vulns-medium-fail.out "1 finding(s) at or above medium"
+assert_contains /tmp/ci-cd-vulns-medium-fail.out "1 new finding(s) at or above medium"
 if run_vulns vulns-medium "$(fresh_cache bad-level)" --fail-on severe >/tmp/ci-cd-vulns-bad-level.out 2>&1; then
   fail "vulns --fail-on with an unknown level must fail"
 fi
@@ -291,7 +296,7 @@ assert_contains /tmp/ci-cd-vulns-unscored.out "severity=high (no score)"
 # osv-scanner (faked) filters the finding out.
 : >"$OSV_LOG"
 run_vulns vulns-ignored "$(fresh_cache ignored)" >/tmp/ci-cd-vulns-ignored.out 2>&1
-assert_contains /tmp/ci-cd-vulns-ignored.out "no findings at or above high"
+assert_contains /tmp/ci-cd-vulns-ignored.out "no new findings at or above high"
 assert_contains "$OSV_LOG" "--config $ROOT/tests/fixtures/vulns-ignored/osv-scanner.toml"
 
 # An ignore entry without a reason is refused with exit 2, before scanning.
@@ -341,7 +346,7 @@ fi
 : >"$OSV_LOG"
 FAKE_OSV_NO_DB=1 run_vulns vulns-medium "$(fresh_cache new-ecosystem)" >/tmp/ci-cd-vulns-new-eco.out 2>&1
 assert_contains "$OSV_LOG" "--download-offline-databases"
-assert_contains /tmp/ci-cd-vulns-new-eco.out "no findings at or above high"
+assert_contains /tmp/ci-cd-vulns-new-eco.out "no new findings at or above high"
 
 # Refresh fails but a database exists: warn with its age and scan offline.
 : >"$OSV_LOG"
@@ -416,7 +421,8 @@ assert_json "$JSON_DIR/findings.json" 'r.status === "findings" && r.error === nu
 assert_json "$JSON_DIR/findings.json" 'JSON.stringify(r.findings[0]) === JSON.stringify({
   lockfile: "sub/package-lock.json", package: "lodash", version: "4.17.15", ecosystem: "npm",
   ids: ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"], max_severity: "8.1", severity: "high",
-  blocking: true, fixed: ["4.17.21"] })'
+  status: "new", blocking: true, fixed: ["4.17.21"], advisory_published: null })'
+assert_json "$JSON_DIR/findings.json" 'r.base.compared === false && r.base.ref === null && r.base.commit === null && r.base.reason === "not a git checkout"'
 assert_json "$JSON_DIR/findings.json" 'r.findings[1].lockfile === "package-lock.json" && r.findings[1].max_severity === "5.3" && r.findings[1].severity === "medium" && r.findings[1].blocking === false'
 
 VULNS_FIXTURE=vulns-unscored vulns_json_case unscored
@@ -486,6 +492,320 @@ if PATH="$OSV_PATH" XDG_CACHE_HOME="$(fresh_cache gate-vulns-failing)" \
 fi
 assert_contains /tmp/ci-cd-gate-vulns-failing.out "gate actions: vulns"
 assert_contains /tmp/ci-cd-gate-vulns-failing.out "gate failed on 'vulns' (1)"
+
+printf 'test: vulns compares with the merge base\n'
+COMPARE_DIR="$TMP_ROOT/vulns-compare"
+mkdir -p "$COMPARE_DIR"
+OSV_JSON="$ROOT/tests/fixtures/osv-tools/osv-json.mjs"
+git_commit() {
+  git -C "$1" add -A
+  git -C "$1" -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m "$2"
+}
+# Commits the scanner's answer for these findings (each a JSON argument of
+# osv-json.mjs); with none, a scan that finds nothing.
+commit_findings() {
+  repo=$1
+  shift
+  node "$OSV_JSON" "$@" >"$repo/osv-output.json"
+  git_commit "$repo" findings
+}
+# A repo whose main has these findings, with origin/main and origin/HEAD on it.
+base_repo() {
+  repo="$COMPARE_DIR/$1"
+  shift
+  git init -q -b main "$repo"
+  commit_findings "$repo" "$@"
+  git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+}
+# Runs vulns on a repo, sets COMPARE_CODE and leaves the result in $name.json
+# and the output in $name.out. COMPARE_ENV adds env words, COMPARE_PATH replaces
+# PATH and COMPARE_REPO the directory, for that one run.
+compare() {
+  name=$1
+  shift
+  set +e
+  env ${COMPARE_ENV:-} PATH="${COMPARE_PATH:-$OSV_PATH}" XDG_CACHE_HOME="$(fresh_cache "compare-$name")" \
+    FAKE_OSV_LOG="$OSV_LOG" "$ROOT/bin/ci" vulns --working-directory "${COMPARE_REPO:-$COMPARE_DIR/$name}" \
+    --json "$COMPARE_DIR/$name.json" "$@" >"$COMPARE_DIR/$name.out" 2>&1
+  COMPARE_CODE=$?
+  set -e
+  # Shells differ on whether `VAR=x function` outlives the call.
+  COMPARE_ENV=
+  COMPARE_PATH=
+  COMPARE_REPO=
+}
+assert_blocks() {
+  test "$COMPARE_CODE" -eq 1 || fail "vulns ($1) must block, exit $COMPARE_CODE"
+  assert_json "$COMPARE_DIR/$1.json" 'r.status === "findings" && r.findings.some((f) => f.blocking)'
+}
+assert_passes() {
+  test "$COMPARE_CODE" -eq 0 || fail "vulns ($1) must pass, exit $COMPARE_CODE"
+  assert_json "$COMPARE_DIR/$1.json" 'r.findings.every((f) => !f.blocking)'
+}
+OLD='"published":"2021-02-15T13:15:00Z"'
+YOUNG='"published":"2026-10-31T00:00:00Z"'
+WITH_FIX="{\"fixed\":\"4.17.21\",$OLD}"
+NO_FIX="{$OLD}"
+YOUNG_FIX="{\"fixed\":\"4.17.21\",$YOUNG}"
+
+# A finding the branch adds blocks, whatever its fix; one main has does not.
+for case in "with-fix:$WITH_FIX" "no-fix:$NO_FIX" "young-fix:$YOUNG_FIX"; do
+  kind=${case%%:*}
+  finding=${case#*:}
+  base_repo "new-$kind"
+  commit_findings "$COMPARE_DIR/new-$kind" "$finding"
+  compare "new-$kind"
+  assert_blocks "new-$kind"
+  assert_contains "$COMPARE_DIR/new-$kind.out" "1 new finding(s) at or above high"
+  assert_contains "$COMPARE_DIR/new-$kind.out" "1 new, 0 existing"
+  assert_json "$COMPARE_DIR/new-$kind.json" 'r.findings[0].status === "new" && r.base.compared === true && r.base.ref === "origin/HEAD" && r.base.reason === null && /^[0-9a-f]{40}$/.test(r.base.commit)'
+
+  base_repo "existing-$kind" "$finding"
+  compare "existing-$kind"
+  assert_passes "existing-$kind"
+  assert_contains "$COMPARE_DIR/existing-$kind.out" "existing, already on the base, not blocking"
+  assert_contains "$COMPARE_DIR/existing-$kind.out" "0 new, 1 existing"
+  assert_contains "$COMPARE_DIR/existing-$kind.out" "no new findings at or above high"
+  assert_json "$COMPARE_DIR/existing-$kind.json" 'r.status === "findings" && r.findings[0].status === "existing"'
+done
+assert_contains "$COMPARE_DIR/existing-with-fix.out" "severity=high (CVSS 8.1) fixed=4.17.21 advisory=2021-02-15"
+assert_json "$COMPARE_DIR/existing-with-fix.json" 'r.findings[0].advisory_published === "2021-02-15T13:15:00Z"'
+
+# An existing finding never blocks at any severity; below fail_on it is `clean`.
+base_repo existing-critical '{"score":"9.8"}'
+compare existing-critical --fail-on low
+assert_passes existing-critical
+base_repo existing-medium '{"score":"5.3"}'
+compare existing-medium
+assert_passes existing-medium
+assert_json "$COMPARE_DIR/existing-medium.json" 'r.status === "clean"'
+
+# A new finding below fail_on is reported, and exit and status stay clean.
+base_repo new-medium
+commit_findings "$COMPARE_DIR/new-medium" '{"score":"5.3"}'
+compare new-medium
+assert_passes new-medium
+assert_contains "$COMPARE_DIR/new-medium.out" "reported, not blocking (below high)"
+assert_json "$COMPARE_DIR/new-medium.json" 'r.status === "clean" && r.findings[0].status === "new"'
+
+# One new finding among existing ones blocks, and only it does.
+base_repo mixed '{"package":"old-pkg"}'
+commit_findings "$COMPARE_DIR/mixed" '{"package":"old-pkg"}' '{"package":"new-pkg"}'
+compare mixed
+assert_blocks mixed
+assert_contains "$COMPARE_DIR/mixed.out" "1 new, 1 existing"
+assert_json "$COMPARE_DIR/mixed.json" 'r.findings.find((f) => f.package === "old-pkg").blocking === false && r.findings.find((f) => f.package === "new-pkg").blocking === true'
+
+# The version is not in the key, and ids can group differently per version.
+base_repo version-move '{"version":"4.17.15"}'
+commit_findings "$COMPARE_DIR/version-move" '{"version":"4.17.16"}'
+compare version-move
+assert_passes version-move
+assert_json "$COMPARE_DIR/version-move.json" 'r.findings[0].status === "existing"'
+base_repo alias-move '{"ids":["GHSA-aaaa-aaaa-aaaa"],"aliases":["CVE-2021-1"]}'
+commit_findings "$COMPARE_DIR/alias-move" '{"ids":["GHSA-bbbb-bbbb-bbbb"],"aliases":["CVE-2021-1"]}'
+compare alias-move
+assert_passes alias-move
+
+# A new advisory, a new lock file and a new package are new.
+base_repo new-advisory-on-a-found-package '{"ids":["GHSA-aaaa-aaaa-aaaa"]}'
+commit_findings "$COMPARE_DIR/new-advisory-on-a-found-package" '{"ids":["GHSA-bbbb-bbbb-bbbb"]}'
+compare new-advisory-on-a-found-package
+assert_blocks new-advisory-on-a-found-package
+base_repo new-lockfile '{"lockfile":"package-lock.json"}'
+commit_findings "$COMPARE_DIR/new-lockfile" '{"lockfile":"sub/package-lock.json"}'
+compare new-lockfile
+assert_blocks new-lockfile
+base_repo new-package '{"package":"lodash"}'
+commit_findings "$COMPARE_DIR/new-package" '{"package":"minimist"}'
+compare new-package
+assert_blocks new-package
+
+# Earliest date in a group of advisories.
+base_repo earliest
+commit_findings "$COMPARE_DIR/earliest" '{"ids":["GHSA-aaaa-aaaa-aaaa","GHSA-bbbb-bbbb-bbbb"],"published":["2024-01-01T00:00:00Z","2023-01-01T00:00:00Z"]}'
+compare earliest
+assert_json "$COMPARE_DIR/earliest.json" 'r.findings[0].advisory_published === "2023-01-01T00:00:00Z"'
+
+# One case per lane: the rule does not depend on the ecosystem.
+for lane in \
+  'npm:package-lock.json:npm' \
+  'pnpm:pnpm-lock.yaml:npm' \
+  'uv:assistant/uv.lock:PyPI' \
+  'go:go.mod:Go'; do
+  manager=${lane%%:*}
+  rest=${lane#*:}
+  lockfile=${rest%%:*}
+  ecosystem=${rest#*:}
+  finding="{\"lockfile\":\"$lockfile\",\"ecosystem\":\"$ecosystem\",\"package\":\"pkg\",\"version\":\"1.0.0\"}"
+  base_repo "lane-$manager-existing" "$finding"
+  compare "lane-$manager-existing"
+  assert_passes "lane-$manager-existing"
+  assert_json "$COMPARE_DIR/lane-$manager-existing.json" 'r.findings[0].status === "existing"'
+  base_repo "lane-$manager-new"
+  commit_findings "$COMPARE_DIR/lane-$manager-new" "$finding"
+  compare "lane-$manager-new"
+  assert_blocks "lane-$manager-new"
+done
+
+# --base names the ref, and without origin/HEAD origin/main is the fallback.
+base_repo explicit-base
+commit_findings "$COMPARE_DIR/explicit-base" "$WITH_FIX"
+git -C "$COMPARE_DIR/explicit-base" branch release HEAD
+compare explicit-base --base release
+assert_passes explicit-base
+assert_json "$COMPARE_DIR/explicit-base.json" 'r.base.ref === "release" && r.base.compared === true'
+base_repo fallback "$WITH_FIX"
+git -C "$COMPARE_DIR/fallback" symbolic-ref --delete refs/remotes/origin/HEAD
+compare fallback
+assert_passes fallback
+assert_json "$COMPARE_DIR/fallback.json" 'r.base.ref === "origin/main"'
+
+# The merge base is what counts, not where main has moved to since.
+base_repo diverged
+git -C "$COMPARE_DIR/diverged" branch feature HEAD
+commit_findings "$COMPARE_DIR/diverged" "$WITH_FIX"
+git -C "$COMPARE_DIR/diverged" update-ref refs/remotes/origin/main HEAD
+git -C "$COMPARE_DIR/diverged" switch -q feature
+node "$OSV_JSON" "$WITH_FIX" >"$COMPARE_DIR/diverged/osv-output.json"
+git_commit "$COMPARE_DIR/diverged" "the branch's own commit"
+compare diverged
+assert_blocks diverged
+
+# A subdirectory scan stays a subdirectory, also under a hook's GIT_DIR.
+base_repo subdirectory
+mkdir "$COMPARE_DIR/subdirectory/app"
+rm "$COMPARE_DIR/subdirectory/osv-output.json"
+node "$OSV_JSON" "$WITH_FIX" >"$COMPARE_DIR/subdirectory/app/osv-output.json"
+git_commit "$COMPARE_DIR/subdirectory" subdirectory
+git -C "$COMPARE_DIR/subdirectory" update-ref refs/remotes/origin/main HEAD
+COMPARE_ENV=GIT_DIR=.git COMPARE_REPO="$COMPARE_DIR/subdirectory/app" compare subdirectory
+assert_passes subdirectory
+assert_json "$COMPARE_DIR/subdirectory.json" 'r.base.compared === true && r.findings[0].lockfile === "package-lock.json" && r.findings[0].status === "existing"'
+
+# The base unpacks to a temporary directory that is removed afterwards.
+SCRATCH="$COMPARE_DIR/scratch"
+mkdir "$SCRATCH"
+base_repo scratch-removed "$WITH_FIX"
+: >"$OSV_LOG"
+COMPARE_ENV=TMPDIR=$SCRATCH compare scratch-removed
+assert_passes scratch-removed
+assert_contains "$OSV_LOG" "--offline $SCRATCH/ci-cd-vulns-"
+test -z "$(ls -A "$SCRATCH")" || fail "vulns must remove the base's temporary directory"
+
+# A base with no lockfiles at all makes everything new.
+base_repo no-base-lockfiles
+rm "$COMPARE_DIR/no-base-lockfiles/osv-output.json"
+git_commit "$COMPARE_DIR/no-base-lockfiles" remove
+git -C "$COMPARE_DIR/no-base-lockfiles" update-ref refs/remotes/origin/main HEAD
+commit_findings "$COMPARE_DIR/no-base-lockfiles" "$WITH_FIX"
+compare no-base-lockfiles
+assert_blocks no-base-lockfiles
+assert_json "$COMPARE_DIR/no-base-lockfiles.json" 'r.base.compared === true'
+
+# No findings on the branch: nothing to compare, so nothing is unpacked.
+base_repo nothing-to-compare "$WITH_FIX"
+commit_findings "$COMPARE_DIR/nothing-to-compare"
+: >"$OSV_LOG"
+compare nothing-to-compare
+assert_passes nothing-to-compare
+test "$(wc -l <"$OSV_LOG")" -eq 1 || fail "vulns with no findings must scan once"
+assert_json "$COMPARE_DIR/nothing-to-compare.json" 'r.status === "clean" && r.base.compared === false && r.base.reason === "no findings to compare"'
+
+# Both sides are judged by the branch's ignore file.
+base_repo ignored "$WITH_FIX"
+cp "$ROOT/tests/fixtures/vulns-ignored/osv-scanner.toml" "$COMPARE_DIR/ignored/osv-scanner.toml"
+commit_findings "$COMPARE_DIR/ignored" "$WITH_FIX"
+: >"$OSV_LOG"
+compare ignored
+assert_passes ignored
+test "$(grep -c -- "--config $COMPARE_DIR/ignored/osv-scanner.toml" "$OSV_LOG")" -eq 2 ||
+  fail "both scans must take the branch's ignore file"
+# An entry that accepts a finding the branch adds is honoured.
+base_repo ignore-added
+cp "$ROOT/tests/fixtures/vulns-ignored/osv-scanner.toml" "$COMPARE_DIR/ignore-added/osv-scanner.toml"
+node "$OSV_JSON" >"$COMPARE_DIR/ignore-added/osv-output.ignored.json"
+commit_findings "$COMPARE_DIR/ignore-added" "$WITH_FIX"
+compare ignore-added
+assert_passes ignore-added
+assert_json "$COMPARE_DIR/ignore-added.json" 'r.findings.length === 0'
+# A branch that drops the file loses the base's entries on both sides, so a
+# finding the base only hid is existing, not new.
+base_repo ignore-dropped "$WITH_FIX"
+cp "$ROOT/tests/fixtures/vulns-ignored/osv-scanner.toml" "$COMPARE_DIR/ignore-dropped/osv-scanner.toml"
+node "$OSV_JSON" >"$COMPARE_DIR/ignore-dropped/osv-output.ignored.json"
+git_commit "$COMPARE_DIR/ignore-dropped" ignore
+git -C "$COMPARE_DIR/ignore-dropped" update-ref refs/remotes/origin/main HEAD
+rm "$COMPARE_DIR/ignore-dropped/osv-scanner.toml"
+git_commit "$COMPARE_DIR/ignore-dropped" drop
+compare ignore-dropped
+assert_passes ignore-dropped
+assert_json "$COMPARE_DIR/ignore-dropped.json" 'r.findings[0].status === "existing"'
+
+# A clone of main as the sweep makes it compares. Whether it has origin/HEAD
+# depends on the git version; `fallback` above covers its absence.
+base_repo shallow-source "$WITH_FIX"
+commit_findings "$COMPARE_DIR/shallow-source" "$WITH_FIX"
+git clone -q --depth 1 --single-branch "file://$COMPARE_DIR/shallow-source" "$COMPARE_DIR/shallow"
+compare shallow
+assert_passes shallow
+assert_json "$COMPARE_DIR/shallow.json" 'r.base.compared === true && r.findings[0].status === "existing"'
+
+printf 'test: vulns blocks when the base cannot be compared\n'
+assert_cannot_compare() {
+  assert_blocks "$1"
+  assert_contains "$COMPARE_DIR/$1.out" "cannot compare with the base, every finding counts as new: $2"
+  assert_json "$COMPARE_DIR/$1.json" 'r.base.compared === false && r.base.reason !== null && r.findings[0].status === "new"'
+}
+git init -q -b main "$COMPARE_DIR/no-base-ref"
+commit_findings "$COMPARE_DIR/no-base-ref" "$WITH_FIX"
+compare no-base-ref
+assert_cannot_compare no-base-ref "no base ref: origin/HEAD, origin/main not found"
+
+base_repo bad-base "$WITH_FIX"
+compare bad-base --base no-such-ref
+assert_cannot_compare bad-base "no base ref: no-such-ref not found"
+
+base_repo no-merge-base "$WITH_FIX"
+git -C "$COMPARE_DIR/no-merge-base" switch -q --orphan unrelated
+node "$OSV_JSON" "$WITH_FIX" >"$COMPARE_DIR/no-merge-base/osv-output.json"
+git_commit "$COMPARE_DIR/no-merge-base" "an unrelated root"
+compare no-merge-base
+assert_cannot_compare no-merge-base "no merge base between HEAD and origin/HEAD"
+
+base_repo unpack-failure "$WITH_FIX"
+FAKE_TAR="$COMPARE_DIR/fake-tar"
+mkdir "$FAKE_TAR"
+printf '#!/bin/sh\necho tar broke >&2\nexit 2\n' >"$FAKE_TAR/tar"
+chmod +x "$FAKE_TAR/tar"
+COMPARE_PATH="$FAKE_TAR:$OSV_PATH" compare unpack-failure
+assert_cannot_compare unpack-failure "could not unpack the base: tar broke"
+
+base_repo base-scan-failure "$WITH_FIX"
+SCRATCH_FAIL="$COMPARE_DIR/scratch-fail"
+mkdir "$SCRATCH_FAIL"
+COMPARE_ENV="TMPDIR=$SCRATCH_FAIL FAKE_OSV_FAIL_UNDER=$SCRATCH_FAIL" compare base-scan-failure
+assert_cannot_compare base-scan-failure "vulns: osv-scanner failed (129)"
+test -z "$(ls -A "$SCRATCH_FAIL")" || fail "vulns must remove the base's temporary directory after a failure"
+
+printf 'test: gate compares with the base too\n'
+base_repo gate-existing "$WITH_FIX"
+cp "$ROOT/tests/fixtures/gate-vulns-failing/.ci-cd.json" "$COMPARE_DIR/gate-existing/"
+PATH="$OSV_PATH" XDG_CACHE_HOME="$(fresh_cache gate-existing)" "$ROOT/bin/ci" gate \
+  --working-directory "$COMPARE_DIR/gate-existing" --target local --platform linux/amd64 >"$COMPARE_DIR/gate-existing.out" 2>&1
+assert_contains "$COMPARE_DIR/gate-existing.out" "gate passed"
+assert_contains "$COMPARE_DIR/gate-existing.out" "0 new, 1 existing"
+
+base_repo gate-new
+cp "$ROOT/tests/fixtures/gate-vulns-failing/.ci-cd.json" "$COMPARE_DIR/gate-new/"
+commit_findings "$COMPARE_DIR/gate-new" "$WITH_FIX"
+if PATH="$OSV_PATH" XDG_CACHE_HOME="$(fresh_cache gate-new)" "$ROOT/bin/ci" gate \
+  --working-directory "$COMPARE_DIR/gate-new" --target local --platform linux/amd64 >"$COMPARE_DIR/gate-new.out" 2>&1; then
+  fail "gate must fail on a new high finding"
+fi
+assert_contains "$COMPARE_DIR/gate-new.out" "gate failed on 'vulns' (1)"
 
 printf 'test: provider-agnostic guards\n'
 assert_not_contains 'GITHUB_' "$ROOT/bin" "$ROOT/lib" "$ROOT/schema" "$ROOT/ci.mk"

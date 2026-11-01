@@ -62,7 +62,7 @@
         "fail_on": {
           "enum": ["critical", "high", "medium", "low"],
           "default": "high",
-          "description": "Lowest severity that fails the scan. Findings below it are reported, not blocking."
+          "description": "Lowest severity that fails the scan, for a finding the merge base does not have. Findings below it, and findings already on the base, are reported, not blocking."
         }
       }
     },
