@@ -807,6 +807,392 @@ if PATH="$OSV_PATH" XDG_CACHE_HOME="$(fresh_cache gate-new)" "$ROOT/bin/ci" gate
 fi
 assert_contains "$COMPARE_DIR/gate-new.out" "gate failed on 'vulns' (1)"
 
+printf 'test: vulns --ages and --fix (fake registry and package managers)\n'
+FIX_TOOLS="$ROOT/tests/fixtures/fix-tools"
+FIX_PATH="$FIX_TOOLS/bin:$OSV_PATH"
+AGE_DIR="$TMP_ROOT/deployment"
+mkdir -p "$AGE_DIR"
+printf '{ "the_age": "7 days" }\n' >"$AGE_DIR/ages.json"
+printf '{ "release_age": { "file": "ages.json", "key": "the_age" }, "gate_on_aged_fix": ["Go"] }\n' >"$AGE_DIR/config.json"
+REGISTRY_LOG="$TMP_ROOT/registry.log"
+UPGRADE_LOG="$TMP_ROOT/upgrade.log"
+AGED_DATE=2021-02-20T00:00:00Z
+FUTURE=2099-01-01T00:00:00Z
+cat >"$AGE_DIR/registry.json" <<EOF
+{
+  "https://registry.npmjs.org/lodash": { "time": { "4.17.21": "$AGED_DATE" } },
+  "https://registry.npmjs.org/@scope%2Fpkg": { "time": { "2.0.0": "$AGED_DATE" } },
+  "https://registry.npmjs.org/young-pkg": { "time": { "4.17.21": "$FUTURE" } },
+  "https://pypi.org/pypi/aiohttp/3.14.4/json": { "urls": [{ "upload_time_iso_8601": "$AGED_DATE" }] },
+  "https://proxy.golang.org/golang.org/x/net/@v/v0.38.0.info": { "Time": "$AGED_DATE" },
+  "https://proxy.golang.org/github.com/!azure/young/@v/v1.1.0.info": { "Time": "$FUTURE" }
+}
+EOF
+FIX_ENV="CI_CD_DEPLOYMENT_CONFIG=$AGE_DIR/config.json NODE_OPTIONS=--import=$FIX_TOOLS/fake-fetch.mjs FAKE_REGISTRY=$AGE_DIR/registry.json FAKE_REGISTRY_LOG=$REGISTRY_LOG FAKE_UPGRADE_LOG=$UPGRADE_LOG"
+: >"$REGISTRY_LOG"
+: >"$UPGRADE_LOG"
+# compare, with the deployment, the fake registry and the fake package managers.
+# AGED_ENV adds env words for that one run.
+aged() {
+  COMPARE_ENV="$FIX_ENV FAKE_SCAN_DIR=$COMPARE_DIR/$1 ${AGED_ENV:-}"
+  AGED_ENV=
+  COMPARE_PATH=$FIX_PATH
+  compare "$@"
+}
+assert_state() {
+  assert_json "$COMPARE_DIR/$1.json" "r.findings[0].fix_state === \"$2\" && r.findings[0].release_age_days === 7"
+}
+assert_no_registry() {
+  test ! -s "$REGISTRY_LOG" || fail "no registry may be called ($1)"
+}
+assert_no_upgrade() {
+  test ! -s "$UPGRADE_LOG" || fail "nothing may be upgraded ($1)"
+}
+# The scanner's answer after an upgrade: the finding is gone, the package is not.
+fixed_result() {
+  node "$OSV_JSON" "$@" >"$AGE_DIR/fixed-$FIXED_NAME.json"
+  printf '%s' "$AGE_DIR/fixed-$FIXED_NAME.json"
+}
+
+# A plain scan and a plain gate ask no registry; --ages reports each state.
+base_repo plain "$WITH_FIX"
+aged plain
+assert_passes plain
+assert_no_registry "plain scan"
+assert_json "$COMPARE_DIR/plain.json" '!("fix_state" in r.findings[0]) && !("release_age_days" in r.findings[0])'
+
+base_repo state-ready "$WITH_FIX"
+aged state-ready --ages
+assert_state state-ready ready
+assert_contains "$REGISTRY_LOG" "https://registry.npmjs.org/lodash"
+assert_contains "$COMPARE_DIR/state-ready.out" "fix_state=ready"
+assert_no_upgrade "--ages"
+
+base_repo state-scoped '{"package":"@scope/pkg","version":"1.0.0","fixed":"2.0.0"}'
+aged state-scoped --ages
+assert_state state-scoped ready
+
+base_repo state-young '{"package":"young-pkg","fixed":"4.17.21"}'
+aged state-young --ages
+assert_state state-young young
+
+base_repo state-unknown '{"package":"not-in-the-registry","fixed":"4.17.21"}'
+aged state-unknown --ages
+assert_state state-unknown unknown
+
+base_repo state-watching "{\"published\":\"$FUTURE\"}"
+aged state-watching --ages
+assert_state state-watching watching
+
+base_repo state-decide "$NO_FIX"
+aged state-decide --ages
+assert_state state-decide decide
+
+# The fix is the lowest version above the installed one, and a commit is none.
+base_repo state-lowest '{"version":"1.0.0","fixed":["0.9.0","1.5.0","4.17.21"]}'
+aged state-lowest --ages
+assert_state state-lowest unknown
+assert_contains "$REGISTRY_LOG" "https://registry.npmjs.org/lodash"
+base_repo state-only-below '{"version":"5.0.0","fixed":"4.17.21"}'
+aged state-only-below --ages
+assert_state state-only-below decide
+base_repo state-commit '{"gitFixed":"0123456789abcdef"}'
+aged state-commit --ages
+assert_state state-commit decide
+assert_json "$COMPARE_DIR/state-commit.json" 'r.findings[0].fixed.length === 0'
+
+# The lock file's own setting is missing or differs: no-age, for each manager.
+for setting in null 3; do
+  base_repo "npm-age-$setting" "$WITH_FIX"
+  AGED_ENV="FAKE_NPM_AGE=$setting" aged "npm-age-$setting" --ages
+  assert_state "npm-age-$setting" no-age
+done
+PNPM_FINDING='{"lockfile":"pnpm-lock.yaml"}'
+base_repo pnpm-age "{\"lockfile\":\"pnpm-lock.yaml\",\"fixed\":\"4.17.21\"}"
+aged pnpm-age --ages
+assert_state pnpm-age ready
+base_repo pnpm-no-age "{\"lockfile\":\"pnpm-lock.yaml\",\"fixed\":\"4.17.21\"}"
+AGED_ENV=FAKE_PNPM_AGE=1440 aged pnpm-no-age --ages
+assert_state pnpm-no-age no-age
+base_repo pnpm-unset "$PNPM_FINDING"
+AGED_ENV=FAKE_PNPM_AGE=undefined aged pnpm-unset --ages
+assert_state pnpm-unset no-age
+
+UV_FINDING='{"lockfile":"assistant/uv.lock","ecosystem":"PyPI","package":"aiohttp","version":"3.14.3","fixed":"3.14.4"}'
+base_repo uv-none "$UV_FINDING"
+aged uv-none --ages
+assert_state uv-none no-age
+base_repo uv-age "$UV_FINDING"
+mkdir "$COMPARE_DIR/uv-age/assistant"
+printf 'exclude-newer = "7 days"\n' >"$COMPARE_DIR/uv-age/assistant/uv.toml"
+aged uv-age --ages
+assert_state uv-age ready
+base_repo uv-parent "$UV_FINDING"
+printf 'exclude-newer = "7 days"\n' >"$COMPARE_DIR/uv-parent/uv.toml"
+aged uv-parent --ages
+assert_state uv-parent ready
+base_repo uv-differs "$UV_FINDING"
+printf 'exclude-newer = "3 days"\n' >"$COMPARE_DIR/uv-differs/uv.toml"
+aged uv-differs --ages
+assert_state uv-differs no-age
+base_repo uv-bad "$UV_FINDING"
+printf 'exclude-newer = "2 weeks"\n' >"$COMPARE_DIR/uv-bad/uv.toml"
+aged uv-bad --ages
+test "$COMPARE_CODE" -eq 1 || fail "a uv value that is not <n> days must fail"
+assert_contains "$COMPARE_DIR/uv-bad.out" "must read '<n> days'"
+assert_json "$COMPARE_DIR/uv-bad.json" 'r.status === "error"'
+
+# A lock file with no setting to read is no-age; Go never is.
+base_repo yarn-lock '{"lockfile":"yarn.lock","fixed":"4.17.21"}'
+aged yarn-lock --ages
+assert_state yarn-lock no-age
+GO_FIX='{"lockfile":"go.mod","ecosystem":"Go","package":"golang.org/x/net","version":"0.37.0","fixed":"0.38.0"}'
+GO_YOUNG='{"lockfile":"go.mod","ecosystem":"Go","package":"github.com/Azure/young","version":"1.0.0","fixed":"1.1.0"}'
+GO_NO_FIX='{"lockfile":"go.mod","ecosystem":"Go","package":"golang.org/x/net","version":"0.37.0"}'
+GO_UNKNOWN='{"lockfile":"go.mod","ecosystem":"Go","package":"golang.org/x/text","version":"0.1.0","fixed":"0.2.0"}'
+base_repo go-young "$GO_YOUNG"
+aged go-young --ages
+assert_state go-young young
+
+printf 'test: the deployment config\n'
+base_repo no-config "$WITH_FIX"
+COMPARE_PATH=$FIX_PATH compare no-config --ages
+test "$COMPARE_CODE" -eq 1 || fail "--ages without a deployment config must fail"
+assert_contains "$COMPARE_DIR/no-config.out" "--ages needs a release age: set CI_CD_DEPLOYMENT_CONFIG"
+assert_json "$COMPARE_DIR/no-config.json" 'r.status === "error"'
+COMPARE_PATH=$FIX_PATH compare no-config --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix without a deployment config must fail"
+assert_contains "$COMPARE_DIR/no-config.out" "--fix needs a release age"
+
+printf '{ "the_age": "a week" }\n' >"$AGE_DIR/bad-ages.json"
+printf '{ "release_age": { "file": "bad-ages.json", "key": "the_age" } }\n' >"$AGE_DIR/bad-config.json"
+base_repo bad-age "$WITH_FIX"
+AGED_ENV="CI_CD_DEPLOYMENT_CONFIG=$AGE_DIR/bad-config.json" aged bad-age --ages
+test "$COMPARE_CODE" -eq 1 || fail "an age that is not <n> days must fail"
+assert_contains "$COMPARE_DIR/bad-age.out" "the_age in $AGE_DIR/bad-ages.json must read '<n> days'"
+printf '{ "release_age": { "file": "ages.json" } }\n' >"$AGE_DIR/no-key.json"
+AGED_ENV="CI_CD_DEPLOYMENT_CONFIG=$AGE_DIR/no-key.json" aged bad-age --ages
+assert_contains "$COMPARE_DIR/bad-age.out" "release_age needs a file and a key"
+AGED_ENV="CI_CD_DEPLOYMENT_CONFIG=$AGE_DIR/missing.json" aged bad-age --ages
+assert_contains "$COMPARE_DIR/bad-age.out" "cannot read deployment config"
+
+printf 'test: vulns --fix upgrades what is ready\n'
+FIXED_NAME=npm
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"version":"4.17.21","clean":true}')"
+base_repo fix-npm "$WITH_FIX"
+aged fix-npm --fix
+test "$COMPARE_CODE" -eq 0 || fail "--fix must exit 0 when the finding goes"
+assert_contains "$UPGRADE_LOG" "npm update lodash --package-lock-only (in $COMPARE_DIR/fix-npm)"
+assert_contains "$OSV_LOG" "--all-packages"
+assert_contains "$COMPARE_DIR/fix-npm.out" "fixed lodash 4.17.15 → 4.17.21 (package-lock.json)"
+assert_json "$COMPARE_DIR/fix-npm.json" 'r.schema === "ci-cd-vulns/v1" && r.findings.length === 0 && r.fixes[0].outcome === "fixed" && r.fixes[0].to === "4.17.21"'
+
+FIXED_NAME=pnpm
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"lockfile":"pnpm-lock.yaml","version":"4.17.21","clean":true}')"
+base_repo fix-pnpm '{"lockfile":"pnpm-lock.yaml","fixed":"4.17.21"}'
+aged fix-pnpm --fix
+test "$COMPARE_CODE" -eq 0 || fail "--fix must fix a pnpm finding"
+assert_contains "$UPGRADE_LOG" "pnpm update lodash --lockfile-only --no-save (in $COMPARE_DIR/fix-pnpm)"
+
+FIXED_NAME=uv
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"lockfile":"assistant/uv.lock","ecosystem":"PyPI","package":"aiohttp","version":"3.14.4","clean":true}')"
+base_repo fix-uv "$UV_FINDING"
+printf 'exclude-newer = "7 days"\n' >"$COMPARE_DIR/fix-uv/uv.toml"
+mkdir "$COMPARE_DIR/fix-uv/assistant"
+aged fix-uv --fix
+test "$COMPARE_CODE" -eq 0 || fail "--fix must fix a uv finding"
+assert_contains "$UPGRADE_LOG" "uv lock --upgrade-package aiohttp (in $COMPARE_DIR/fix-uv/assistant)"
+assert_contains "$COMPARE_DIR/fix-uv.out" "fixed aiohttp 3.14.3 → 3.14.4 (assistant/uv.lock)"
+
+# Nothing ready: exit 0, nothing changes, each finding is reported.
+for case in \
+  'young:{"package":"young-pkg","fixed":"4.17.21"}' \
+  "watching:{\"published\":\"$FUTURE\"}" \
+  "decide:$NO_FIX" \
+  'unknown:{"package":"young-pkg-gone","fixed":"4.17.21"}'; do
+  state=${case%%:*}
+  : >"$UPGRADE_LOG"
+  base_repo "wait-$state" "${case#*:}"
+  aged "wait-$state" --fix
+  assert_no_upgrade "$state"
+  test "$COMPARE_CODE" -eq 0 || fail "--fix with a $state finding must exit 0"
+  assert_contains "$COMPARE_DIR/wait-$state.out" "waiting "
+  assert_contains "$COMPARE_DIR/wait-$state.out" " $state"
+  assert_json "$COMPARE_DIR/wait-$state.json" "r.fixes[0].outcome === \"waiting\" && r.fixes[0].fix_state === \"$state\""
+done
+base_repo wait-no-age "$WITH_FIX"
+AGED_ENV=FAKE_NPM_AGE=null aged wait-no-age --fix
+assert_no_upgrade no-age
+test "$COMPARE_CODE" -eq 0 || fail "--fix with a no-age finding must exit 0"
+assert_contains "$COMPARE_DIR/wait-no-age.out" "waiting lodash no-age"
+
+# Below fail_on is left alone, and --fail-on moves that line.
+base_repo below-fail-on '{"score":"5.3","fixed":"4.17.21"}'
+aged below-fail-on --fix
+assert_no_upgrade "below fail_on"
+assert_contains "$COMPARE_DIR/below-fail-on.out" "waiting lodash ready"
+FIXED_NAME=medium
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"version":"4.17.21","clean":true}')"
+base_repo fail-on-medium '{"score":"5.3","fixed":"4.17.21"}'
+aged fail-on-medium --fix --fail-on medium
+assert_contains "$UPGRADE_LOG" "npm update lodash --package-lock-only (in $COMPARE_DIR/fail-on-medium)"
+: >"$UPGRADE_LOG"
+
+# A package being upgraded is listed once, whatever its lesser advisories say.
+FIXED_NAME=lesser
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"version":"4.17.21","clean":true}')"
+base_repo fix-lesser "$WITH_FIX" '{"ids":["GHSA-bbbb-bbbb-bbbb"],"score":"5.3","fixed":"4.17.21"}'
+aged fix-lesser --fix
+assert_json "$COMPARE_DIR/fix-lesser.json" 'r.fixes.length === 1 && r.fixes[0].outcome === "fixed"'
+
+# Clean: nothing to do.
+base_repo fix-clean
+aged fix-clean --fix
+test "$COMPARE_CODE" -eq 0 || fail "--fix on a clean repo must exit 0"
+assert_contains "$COMPARE_DIR/fix-clean.out" "nothing to fix"
+
+# An upgrade that leaves the finding, or a package the manifest holds, fails it.
+base_repo fix-left "$WITH_FIX"
+aged fix-left --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail when the finding stays"
+assert_contains "$COMPARE_DIR/fix-left.out" "failed lodash"
+assert_json "$COMPARE_DIR/fix-left.json" 'r.fixes[0].outcome === "failed" && r.findings.length === 1'
+
+base_repo fix-other-version "$WITH_FIX"
+FIXED_NAME=still
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"version":"4.17.16","fixed":"4.17.21"}')"
+printf '{ "dependencies": { "lodash": "^4.17.15" } }\n' >"$COMPARE_DIR/fix-other-version/package.json"
+aged fix-other-version --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail when a lower version moved but stays vulnerable"
+assert_contains "$COMPARE_DIR/fix-other-version.out" "failed lodash"
+
+base_repo fix-failed "$WITH_FIX"
+AGED_ENV=FAKE_UPGRADE_FAIL=1 aged fix-failed --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail when the upgrade fails"
+assert_contains "$COMPARE_DIR/fix-failed.out" "fake upgrade failure"
+assert_contains "$COMPARE_DIR/fix-failed.out" "failed lodash"
+
+base_repo fix-pinned "$WITH_FIX"
+printf '{ "dependencies": { "lodash": "4.17.15" } }\n' >"$COMPARE_DIR/fix-pinned/package.json"
+aged fix-pinned --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail on a pinned package"
+assert_contains "$COMPARE_DIR/fix-pinned.out" "lodash pinned in package.json"
+assert_json "$COMPARE_DIR/fix-pinned.json" 'r.fixes[0].outcome === "pinned" && r.fixes[0].manifest === "package.json"'
+
+base_repo fix-uv-pinned "$UV_FINDING"
+mkdir "$COMPARE_DIR/fix-uv-pinned/assistant"
+printf 'exclude-newer = "7 days"\n' >"$COMPARE_DIR/fix-uv-pinned/uv.toml"
+cat >"$COMPARE_DIR/fix-uv-pinned/assistant/uv.lock" <<'EOF'
+[[package]]
+name = "assistant"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "aiohttp" }]
+EOF
+aged fix-uv-pinned --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail on a pinned uv package"
+assert_contains "$COMPARE_DIR/fix-uv-pinned.out" "aiohttp pinned in pyproject.toml"
+
+# --lockfile scopes both the upgrades and the report; the manifest is untouched.
+: >"$UPGRADE_LOG"
+FIXED_NAME=scope
+AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"lockfile":"a/package-lock.json","fixed":"4.17.21"}' '{"lockfile":"b/package-lock.json","version":"4.17.21","clean":true}')"
+base_repo fix-scope '{"lockfile":"a/package-lock.json","fixed":"4.17.21"}' '{"lockfile":"b/package-lock.json","fixed":"4.17.21"}'
+mkdir "$COMPARE_DIR/fix-scope/a" "$COMPARE_DIR/fix-scope/b"
+printf '{ "dependencies": {} }\n' >"$COMPARE_DIR/fix-scope/b/package.json"
+aged fix-scope --fix --lockfile b/package-lock.json
+test "$COMPARE_CODE" -eq 0 || fail "--fix --lockfile must fix that lock file"
+assert_contains "$UPGRADE_LOG" "(in $COMPARE_DIR/fix-scope/b)"
+if grep -q "fix-scope/a)" "$UPGRADE_LOG"; then
+  fail "--fix --lockfile must leave other lock files alone"
+fi
+assert_contains "$COMPARE_DIR/fix-scope.out" "fixed lodash 4.17.15 → 4.17.21 (b/package-lock.json)"
+assert_json "$COMPARE_DIR/fix-scope.json" 'r.fixes.length === 1 && r.findings.length === 1'
+if run_vulns vulns-medium "$(fresh_cache lockfile-alone)" --lockfile a >/tmp/ci-cd-vulns-lockfile.out 2>&1; then
+  fail "--lockfile without --fix must fail"
+fi
+assert_contains /tmp/ci-cd-vulns-lockfile.out "--lockfile needs --fix"
+
+printf 'test: gate holds a gate_on_aged_fix ecosystem to the age\n'
+GATE_CONFIG="$ROOT/tests/fixtures/gate-vulns-failing/.ci-cd.json"
+# Runs the gate on a repo; sets COMPARE_CODE, output in $name.out.
+gate_aged() {
+  name=$1
+  shift
+  cp "$GATE_CONFIG" "$COMPARE_DIR/$name/"
+  set +e
+  env "$@" PATH="$FIX_PATH" XDG_CACHE_HOME="$(fresh_cache "gate-$name")" "$ROOT/bin/ci" gate \
+    --working-directory "$COMPARE_DIR/$name" --target local --platform linux/amd64 >"$COMPARE_DIR/$name.out" 2>&1
+  COMPARE_CODE=$?
+  set -e
+}
+
+base_repo overdue "$GO_FIX"
+gate_aged overdue $FIX_ENV
+test "$COMPARE_CODE" -eq 1 || fail "gate must block an overdue finding"
+assert_contains "$COMPARE_DIR/overdue.out" "1 overdue finding(s), with a fix at least 7 days old"
+assert_contains "$COMPARE_DIR/overdue.out" "gate failed on 'vulns' (1)"
+assert_contains "$REGISTRY_LOG" "https://proxy.golang.org/golang.org/x/net/@v/v0.38.0.info"
+if grep -q "new finding(s)" "$COMPARE_DIR/overdue.out"; then
+  fail "an overdue finding is its own group"
+fi
+
+aged overdue --ages
+assert_blocks overdue
+assert_state overdue overdue
+
+: >"$REGISTRY_LOG"
+for case in "young:$GO_YOUNG" "no-fix:$GO_NO_FIX" "lookup-failed:$GO_UNKNOWN"; do
+  kind=${case%%:*}
+  base_repo "overdue-$kind" "${case#*:}"
+  gate_aged "overdue-$kind" $FIX_ENV
+  test "$COMPARE_CODE" -eq 0 || fail "gate must pass an existing Go finding ($kind)"
+  assert_contains "$COMPARE_DIR/overdue-$kind.out" "gate passed"
+done
+
+# An overdue finding below fail_on is not one.
+base_repo overdue-medium '{"lockfile":"go.mod","ecosystem":"Go","package":"golang.org/x/net","version":"0.37.0","fixed":"0.38.0","score":"5.3"}'
+gate_aged overdue-medium $FIX_ENV
+test "$COMPARE_CODE" -eq 0 || fail "gate must pass a finding below fail_on"
+aged overdue-medium --ages
+assert_state overdue-medium ready
+
+# A branch that removes a finding the base has passes; a new finding still blocks.
+base_repo overdue-removes "$GO_FIX" "$GO_YOUNG"
+commit_findings "$COMPARE_DIR/overdue-removes" "$GO_FIX"
+gate_aged overdue-removes $FIX_ENV
+test "$COMPARE_CODE" -eq 0 || fail "gate must pass a branch that removes a finding"
+assert_contains "$COMPARE_DIR/overdue-removes.out" "gate passed"
+aged overdue-removes --ages
+assert_contains "$COMPARE_DIR/overdue-removes.out" "this branch removes a finding the base has"
+assert_passes overdue-removes
+
+base_repo overdue-removes-adds "$GO_FIX" "$GO_YOUNG"
+commit_findings "$COMPARE_DIR/overdue-removes-adds" "$GO_FIX" '{"lockfile":"go.mod","ecosystem":"Go","package":"golang.org/x/added","version":"1.0.0"}'
+gate_aged overdue-removes-adds $FIX_ENV
+test "$COMPARE_CODE" -eq 1 || fail "gate must still block what a branch adds"
+
+# No deployment config: the gate is as it was, and asks no registry.
+: >"$REGISTRY_LOG"
+base_repo overdue-no-config "$GO_FIX"
+gate_aged overdue-no-config FAKE_REGISTRY_LOG="$REGISTRY_LOG"
+test "$COMPARE_CODE" -eq 0 || fail "gate without a deployment config must pass an existing finding"
+assert_no_registry "gate without a deployment config"
+
+# An ecosystem the deployment does not list asks no registry at the gate.
+base_repo gate-npm "$WITH_FIX"
+gate_aged gate-npm $FIX_ENV
+test "$COMPARE_CODE" -eq 0 || fail "gate must pass an existing npm finding"
+assert_no_registry "gate on an unlisted ecosystem"
+
+# --fix leaves overdue findings to whatever updates that ecosystem.
+: >"$UPGRADE_LOG"
+base_repo overdue-fix "$GO_FIX"
+aged overdue-fix --fix
+assert_no_upgrade overdue
+test "$COMPARE_CODE" -eq 0 || fail "--fix must not fail on an overdue finding"
+assert_contains "$COMPARE_DIR/overdue-fix.out" "waiting golang.org/x/net overdue"
+
 printf 'test: provider-agnostic guards\n'
 assert_not_contains 'GITHUB_' "$ROOT/bin" "$ROOT/lib" "$ROOT/schema" "$ROOT/ci.mk"
 assert_not_contains '/home/robert|work/roost|Roost' "$ROOT/bin" "$ROOT/lib" "$ROOT/schema" "$ROOT/ci.mk"

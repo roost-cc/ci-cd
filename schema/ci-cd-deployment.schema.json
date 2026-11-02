@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ci-cd-deployment.schema.json",
+  "title": "ci-cd deployment config",
+  "description": "A file a deployment owns, named by CI_CD_DEPLOYMENT_CONFIG. ci-cd holds no release age.",
+  "type": "object",
+  "required": ["release_age"],
+  "additionalProperties": true,
+  "properties": {
+    "release_age": {
+      "description": "Where the deployment keeps its release age. The value must read '<n> days'.",
+      "type": "object",
+      "required": ["file", "key"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "description": "A JSON file, relative to this config.",
+          "type": "string",
+          "minLength": 1
+        },
+        "key": {
+          "description": "A top-level key of that file.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "gate_on_aged_fix": {
+      "description": "OSV ecosystems in which `bin/ci gate` blocks on a fix at least the age old.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "examples": [["Go"]]
+    }
+  }
+}

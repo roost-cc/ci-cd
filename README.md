@@ -191,7 +191,8 @@ root.
 ## Vulnerability Scan
 
 ```sh
-bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>]
+bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>] [--ages]
+bin/ci vulns --fix [--lockfile <path>] [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>]
 ```
 
 `vulns` scans every lockfile in a checkout, transitive dependencies included
@@ -347,6 +348,99 @@ Exit codes:
 | 0    | No `new` finding at or above the threshold; no lockfiles; or no database (skipped) |
 | 1    | `new` findings at or above the threshold; osv-scanner missing or failed            |
 | 2    | An `[[IgnoredVulns]]` entry is missing `reason` or `ignoreUntil`                   |
+
+### Fixing findings
+
+`--ages` says what can be done about each finding, and `--fix` does the part
+that needs nobody. Both read the deployment config. Without either flag no
+registry is called.
+
+**Deployment config.** ci-cd holds no release age and no default. A deployment
+names its own JSON file with `CI_CD_DEPLOYMENT_CONFIG`
+(schema: `schema/ci-cd-deployment.schema.json`):
+
+```json
+{
+  "release_age": { "file": "policy.json", "key": "releaseAge" },
+  "gate_on_aged_fix": ["Go"]
+}
+```
+
+`release_age.file` is relative to this config and `key` is a top-level key of
+that JSON file, so the age can stay in a file the deployment already keeps. Its
+value must read `<n> days`, for example `"7 days"`; anything else is an error.
+`gate_on_aged_fix` lists OSV ecosystems the gate holds to the age (below).
+`--ages` and `--fix` fail without a config. `bin/ci gate` without one behaves as
+described above, so a contributor with no deployment is not stopped.
+
+**`--ages`** adds `release_age_days` and `fix_state` to each finding, in the
+text output and the JSON. The fix considered is the lowest `fixed` version above
+the installed one, and its date comes from the registry: npm's
+`time[<version>]`, PyPI's `upload_time_iso_8601` or the Go proxy's `.info`
+`Time`.
+
+| `fix_state` | Meaning                                                                                |
+| ----------- | -------------------------------------------------------------------------------------- |
+| `ready`     | A fix at least the age old                                                             |
+| `young`     | A fix under the age                                                                    |
+| `watching`  | No fix, and the advisory is under the age                                              |
+| `decide`    | No fix, and the advisory is past the age                                               |
+| `no-age`    | The lockfile's own age setting is missing or differs from the deployment's             |
+| `unknown`   | The registry could not be asked, or the advisory has no date                           |
+| `overdue`   | `ready` at or above the threshold, in a `gate_on_aged_fix` ecosystem; it blocks a scan |
+
+The lockfile's own setting is only checked against the age, never used as it:
+`npm config get min-release-age` (days), `pnpm config get minimumReleaseAge`
+(minutes), both run in the lockfile's directory, or `exclude-newer` in the
+nearest `uv.toml` up to the checkout, which must read `<n> days`. A lockfile with
+no such setting, such as `yarn.lock`, is `no-age`. `go.mod` is never `no-age`,
+because the `go` tool has no release age.
+
+**Gate.** In a `gate_on_aged_fix` ecosystem, a finding at or above the threshold
+with a fix at least the age old is `overdue` and blocks, `new` or `existing`. It
+is the only case in which an `existing` finding blocks. No fix, a younger fix or
+a failed lookup does not block one. A branch that removes a finding the base has
+passes, so two branches that each fix one overdue finding do not hold each other
+red; what a branch adds still blocks. The gate calls a registry only for such an
+ecosystem with `existing` findings at or above the threshold, and never without a
+deployment config. `blocking` in the JSON covers `overdue`, so `--ages` exits 1
+on one too; a plain `bin/ci vulns` calls no registry and does not know of it.
+
+**`--fix`** upgrades each `ready` finding at or above the threshold, one package
+at a time, in the lockfile's directory:
+
+| Lockfile            | Command                                       |
+| ------------------- | --------------------------------------------- |
+| `uv.lock`           | `uv lock --upgrade-package <pkg>`             |
+| `pnpm-lock.yaml`    | `pnpm update <pkg> --lockfile-only --no-save` |
+| `package-lock.json` | `npm update <pkg> --package-lock-only`        |
+
+It changes lockfiles only, never a manifest, and never refreshes a whole lock.
+The manager's own age setting still applies, so nothing younger gets through.
+Every other finding is left alone, `overdue` ones included. `--lockfile <path>`,
+relative to the working directory, limits the upgrades and the list to one
+lockfile. Then it re-scans and lists each package:
+
+```text
+ci-cd: vulns: fixed <pkg> <old> → <new> (<lockfile>)
+ci-cd: vulns: waiting <pkg> <fix_state>
+ci-cd: vulns: failed <pkg>
+ci-cd: vulns: <pkg> pinned in <manifest>
+```
+
+`pinned` means the manifest names the package and the upgrade left it at its
+version. `failed` means the command failed or the finding is still there, for
+example a transitive package held by its parent's range.
+
+`--fix` exits 1 on `failed` or `pinned` and 0 otherwise, whatever the re-scan
+would exit: an `existing` finding never fails a scan. `young`, `watching`,
+`decide`, `no-age` and `unknown` findings do not fail it, and with nothing `ready`
+it exits 0 and changes nothing.
+
+`--fix --json <path>` writes the re-scan's report, with `fix_state` on its
+findings, plus a `fixes` array of
+`{ outcome, package, lockfile, from, to, manifest, fix_state }`, each with the
+fields its `outcome` (`fixed`, `waiting`, `failed` or `pinned`) has.
 
 ## Toolchain Profiles
 
