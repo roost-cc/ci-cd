@@ -330,7 +330,7 @@ scanned). Each finding carries the lockfile (relative to the working directory),
 package, version, osv-scanner's `ecosystem`, the IDs the text output shows,
 `max_severity` (the CVSS score string, or `null`), `severity` (the level above),
 `status` (`new` or `existing`), `at_fail_on` (at or above the threshold),
-`blocking` (`new` and at or above the threshold),
+`blocking` (`new` and at or above the threshold, or `overdue`, below),
 `fixed` (known fixed versions) and `advisory_published` (the earliest OSV
 `published` date of its advisories, or `null`). Non-blocking findings are
 included with `blocking: false`.

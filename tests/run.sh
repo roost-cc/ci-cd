@@ -1051,6 +1051,13 @@ aged fix-clean --fix
 test "$COMPARE_CODE" -eq 0 || fail "--fix on a clean repo must exit 0"
 assert_contains "$COMPARE_DIR/fix-clean.out" "nothing to fix"
 
+# A scan that never ran says nothing was fixed; bl would close the story as "no change needed".
+printf 'test: vulns --fix fails when the scan was skipped\n'
+base_repo fix-skipped "$WITH_FIX"
+AGED_ENV="FAKE_OSV_DOWNLOAD_FAIL=1 FAKE_OSV_NO_DB=1" aged fix-skipped --fix
+test "$COMPARE_CODE" -eq 1 || fail "--fix must fail when the scan was skipped"
+assert_contains "$COMPARE_DIR/fix-skipped.out" "the scan did not run"
+
 # An upgrade that leaves the finding, or a package the manifest holds, fails it.
 base_repo fix-left "$WITH_FIX"
 aged fix-left --fix
@@ -1132,6 +1139,7 @@ gate_aged overdue $FIX_ENV
 test "$COMPARE_CODE" -eq 1 || fail "gate must block an overdue finding"
 assert_contains "$COMPARE_DIR/overdue.out" "1 overdue finding(s), with a fix at least 7 days old"
 assert_contains "$COMPARE_DIR/overdue.out" "gate failed on 'vulns' (1)"
+assert_contains "$COMPARE_DIR/overdue.out" "0 new, 1 existing"
 assert_contains "$REGISTRY_LOG" "https://proxy.golang.org/golang.org/x/net/@v/v0.38.0.info"
 if grep -q "new finding(s)" "$COMPARE_DIR/overdue.out"; then
   fail "an overdue finding is its own group"
