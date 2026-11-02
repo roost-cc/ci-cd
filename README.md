@@ -300,6 +300,7 @@ writes one.
       "max_severity": "8.1",
       "severity": "high",
       "status": "new",
+      "at_fail_on": true,
       "blocking": true,
       "fixed": ["4.17.21"],
       "advisory_published": "2021-02-15T13:15:00Z"
@@ -328,7 +329,8 @@ from a days-old database shows here. `base` says what the scan compared with:
 scanned). Each finding carries the lockfile (relative to the working directory),
 package, version, osv-scanner's `ecosystem`, the IDs the text output shows,
 `max_severity` (the CVSS score string, or `null`), `severity` (the level above),
-`status` (`new` or `existing`), `blocking` (`new` and at or above the threshold),
+`status` (`new` or `existing`), `at_fail_on` (at or above the threshold),
+`blocking` (`new` and at or above the threshold),
 `fixed` (known fixed versions) and `advisory_published` (the earliest OSV
 `published` date of its advisories, or `null`). Non-blocking findings are
 included with `blocking: false`.

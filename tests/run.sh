@@ -413,7 +413,7 @@ VULNS_FIXTURE=vulns-medium vulns_json_case clean
 test "$VULNS_CODE" -eq 0 || fail "vulns --json clean must exit 0"
 assert_json "$JSON_DIR/clean.json" 'r.status === "clean" && r.fail_on === "high" && r.error === null && r.db_refreshed === false && r.db_age_hours === 0'
 # Below the threshold: listed, not blocking.
-assert_json "$JSON_DIR/clean.json" 'r.findings.length === 1 && r.findings[0].blocking === false && r.findings[0].severity === "medium"'
+assert_json "$JSON_DIR/clean.json" 'r.findings.length === 1 && r.findings[0].blocking === false && r.findings[0].at_fail_on === false && r.findings[0].severity === "medium"'
 
 VULNS_FIXTURE=vulns-mixed vulns_json_case findings
 test "$VULNS_CODE" -eq 1 || fail "vulns --json with a high finding must exit 1"
@@ -421,7 +421,7 @@ assert_json "$JSON_DIR/findings.json" 'r.status === "findings" && r.error === nu
 assert_json "$JSON_DIR/findings.json" 'JSON.stringify(r.findings[0]) === JSON.stringify({
   lockfile: "sub/package-lock.json", package: "lodash", version: "4.17.15", ecosystem: "npm",
   ids: ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"], max_severity: "8.1", severity: "high",
-  status: "new", blocking: true, fixed: ["4.17.21"], advisory_published: null })'
+  status: "new", at_fail_on: true, blocking: true, fixed: ["4.17.21"], advisory_published: null })'
 assert_json "$JSON_DIR/findings.json" 'r.base.compared === false && r.base.ref === null && r.base.commit === null && r.base.reason === "not a git checkout"'
 assert_json "$JSON_DIR/findings.json" 'r.findings[1].lockfile === "package-lock.json" && r.findings[1].max_severity === "5.3" && r.findings[1].severity === "medium" && r.findings[1].blocking === false'
 
