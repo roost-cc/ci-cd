@@ -3,8 +3,9 @@
 #
 # The scanned directory is the last argument. Output comes from files in it:
 #   osv-output.json          canned JSON (absent: exit 128, "no lockfiles")
-#   osv-output.ignored.json  used instead when --config is passed (models
-#                            osv-scanner filtering out the ignored findings)
+#   osv-output.ignored.json  used instead when --config is passed, or an
+#                            osv-scanner.toml sits in the scanned directory
+#                            (models osv-scanner filtering the ignored findings)
 # @DIR@ in the canned JSON is replaced with the scanned directory. Exit is 1
 # when the JSON carries a max_severity (a finding), else 0.
 #
@@ -14,6 +15,7 @@
 #   FAKE_OSV_DOWNLOAD_FAIL  fail any --download-offline-databases run
 #   FAKE_OSV_NO_DB          fail any --offline run (no local database)
 #   FAKE_OSV_EXIT           force this exit code after printing output
+#   FAKE_OSV_FAIL_UNDER     exit 129 for a scanned directory under this prefix
 set -eu
 
 if [ "${1:-}" = "--version" ]; then
@@ -49,6 +51,16 @@ if [ "$offline" = 1 ] && [ -n "${FAKE_OSV_NO_DB:-}" ]; then
   exit 127
 fi
 
+if [ -n "${FAKE_OSV_FAIL_UNDER:-}" ]; then
+  case $dir in
+  "$FAKE_OSV_FAIL_UNDER"*)
+    echo 'fake scan failure' >&2
+    exit 129
+    ;;
+  esac
+fi
+
+if [ -f "$dir/osv-scanner.toml" ]; then config=1; fi
 output=$dir/osv-output.json
 if [ "$config" = 1 ] && [ -f "$dir/osv-output.ignored.json" ]; then
   output=$dir/osv-output.ignored.json

@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+FAKE_TOOL=uv exec "$(dirname -- "$0")/npm" "$@"

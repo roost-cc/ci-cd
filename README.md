@@ -179,7 +179,8 @@ what the shared pre-push hook invokes, so no action name is hardcoded in the
 scaffold.
 
 `vulns` scans the checkout's lockfiles for known vulnerabilities with
-osv-scanner. It needs no `.ci-cd.json`; see
+osv-scanner and fails on what the branch introduces. It needs no `.ci-cd.json`;
+see
 [Vulnerability Scan](#vulnerability-scan).
 
 `--working-directory` points at the consumer repo root when invoking `ci-cd`
@@ -190,7 +191,8 @@ root.
 ## Vulnerability Scan
 
 ```sh
-bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--json <path>]
+bin/ci vulns [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>] [--ages]
+bin/ci vulns --fix [--lockfile <path>] [--working-directory <dir>] [--fail-on critical|high|medium|low] [--base <ref>] [--json <path>]
 ```
 
 `vulns` scans every lockfile in a checkout, transitive dependencies included
@@ -215,11 +217,24 @@ unchanged:
 **Threshold.** A finding's severity comes from its group's `max_severity` (a
 CVSS base score): `critical` is 9.0 and up, `high` 7.0 and up, `medium` 4.0 and
 up, `low` above 0. A finding with **no** score counts as `high`, so it fails the
-default gate until someone triages it. Findings at or above the threshold fail
-the scan, one line each (lockfile, package, version, OSV/GHSA/CVE IDs,
-severity, fixed versions if known). Findings below it print under a "reported,
-not blocking" heading. The threshold is `--fail-on`, else `vulns.fail_on` from
-the config, else `high`.
+default gate until someone triages it. `new` findings at or above the threshold
+fail the scan, one line each (lockfile, package, version, OSV/GHSA/CVE IDs,
+severity, fixed versions if known, advisory date). `new` findings below it print
+under a "reported, not blocking" heading. The threshold is `--fail-on`, else
+`vulns.fail_on` from the config, else `high`.
+
+**Only what the branch introduces blocks.** When there are findings, the scan
+also runs on the merge base of `HEAD` and `--base <ref>`, else `origin/HEAD`,
+else `origin/main`, unpacked with `git archive` to a temporary directory, with
+the branch's `osv-scanner.toml` and the same OSV database. A finding is
+`existing` when the base has that lockfile and package and shares an advisory ID
+with it; the version does not count, so moving between two versions under one
+advisory adds nothing. Anything else is `new`, whether or not a fix exists. An
+`existing` finding never blocks, at any severity: it prints in a group of its
+own and the summary counts `new` and `existing`. It needs no ignore entry. If the
+base cannot be compared (not a git checkout, no base ref, no merge base, a failed
+archive or scan), the scan logs why, every finding counts as `new`, and the scan
+blocks as if there were no base.
 
 **Accepted findings** live in one `osv-scanner.toml` at the repo root, as
 osv-scanner `[[IgnoredVulns]]` entries:
@@ -269,6 +284,12 @@ writes one.
   "scanned_at": "2026-10-02T06:00:00.000Z",
   "db_refreshed": false,
   "db_age_hours": 3,
+  "base": {
+    "ref": "origin/HEAD",
+    "commit": "5fbe7b0c1a2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+    "compared": true,
+    "reason": null
+  },
   "findings": [
     {
       "lockfile": "sub/package-lock.json",
@@ -278,8 +299,11 @@ writes one.
       "ids": ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"],
       "max_severity": "8.1",
       "severity": "high",
+      "status": "new",
+      "at_fail_on": true,
       "blocking": true,
-      "fixed": ["4.17.21"]
+      "fixed": ["4.17.21"],
+      "advisory_published": "2021-02-15T13:15:00Z"
     }
   ],
   "error": null
@@ -289,7 +313,7 @@ writes one.
 | `status`       | Meaning                                                                                                               | Exit |
 | -------------- | --------------------------------------------------------------------------------------------------------------------- | ---- |
 | `clean`        | No finding at or above the threshold (`findings` may list non-blocking ones)                                          | 0    |
-| `findings`     | At least one finding at or above the threshold                                                                        | 1    |
+| `findings`     | At least one finding at or above the threshold, `new` or `existing`; exit 1 only when one is `blocking`               | 0/1  |
 | `no-lockfiles` | osv-scanner found nothing to scan                                                                                     | 0    |
 | `skipped`      | No OSV database and the download failed; `error` says so                                                              | 0    |
 | `error`        | osv-scanner missing, wrong version or failed; unparsable output; bad config or ignore file; `error` holds the message | 1/2  |
@@ -299,14 +323,21 @@ it). `db_refreshed` is `true` when this scan refreshed the OSV database.
 `db_age_hours` is the age in whole hours of the database the scan used (`0`
 right after a refresh, the stamp's age otherwise, as the "refresh failed"
 warning reports it), or `null` when no database was used; a `clean` result
-from a days-old database shows here. Each
-finding carries the lockfile (relative to the working directory), package,
-version, osv-scanner's `ecosystem`, the IDs the text output shows,
+from a days-old database shows here. `base` says what the scan compared with:
+`ref`, the merge-base `commit`, `compared`, and `reason` when `compared` is
+`false` (`no findings to compare` when the branch had none, so no base was
+scanned). Each finding carries the lockfile (relative to the working directory),
+package, version, osv-scanner's `ecosystem`, the IDs the text output shows,
 `max_severity` (the CVSS score string, or `null`), `severity` (the level above),
-`blocking` (at or above the threshold) and `fixed` (known fixed versions).
-Findings below the threshold are included with `blocking: false`.
+`status` (`new` or `existing`), `at_fail_on` (at or above the threshold),
+`blocking` (`new` and at or above the threshold, or `overdue`, below),
+`fixed` (known fixed versions) and `advisory_published` (the earliest OSV
+`published` date of its advisories, or `null`). Non-blocking findings are
+included with `blocking: false`.
 
-For consumers: `status` is relative to `fail_on`, which a repo's
+For consumers: the exit code comes from `blocking` alone, so a scan of the base
+branch itself exits 0 with `status: "findings"` when it has findings at or above
+the threshold. `status` is relative to `fail_on`, which a repo's
 `vulns.fail_on` can change, so a caller that needs one policy across repos
 passes `--fail-on` or applies its own threshold to `findings[].severity`. Only
 `clean` and `no-lockfiles` mean a scan ran and passed; `skipped` exits 0 but
@@ -314,11 +345,104 @@ scanned nothing.
 
 Exit codes:
 
-| Exit | Meaning                                                                      |
-| ---- | ---------------------------------------------------------------------------- |
-| 0    | No finding at or above the threshold; no lockfiles; or no database (skipped) |
-| 1    | Findings at or above the threshold; osv-scanner missing or failed            |
-| 2    | An `[[IgnoredVulns]]` entry is missing `reason` or `ignoreUntil`             |
+| Exit | Meaning                                                                            |
+| ---- | ---------------------------------------------------------------------------------- |
+| 0    | No `new` finding at or above the threshold; no lockfiles; or no database (skipped) |
+| 1    | `new` findings at or above the threshold; osv-scanner missing or failed            |
+| 2    | An `[[IgnoredVulns]]` entry is missing `reason` or `ignoreUntil`                   |
+
+### Fixing findings
+
+`--ages` says what can be done about each finding, and `--fix` does the part
+that needs nobody. Both read the deployment config. Without either flag no
+registry is called.
+
+**Deployment config.** ci-cd holds no release age and no default. A deployment
+names its own JSON file with `CI_CD_DEPLOYMENT_CONFIG`
+(schema: `schema/ci-cd-deployment.schema.json`):
+
+```json
+{
+  "release_age": { "file": "policy.json", "key": "releaseAge" },
+  "gate_on_aged_fix": ["Go"]
+}
+```
+
+`release_age.file` is relative to this config and `key` is a top-level key of
+that JSON file, so the age can stay in a file the deployment already keeps. Its
+value must read `<n> days`, for example `"7 days"`; anything else is an error.
+`gate_on_aged_fix` lists OSV ecosystems the gate holds to the age (below).
+`--ages` and `--fix` fail without a config. `bin/ci gate` without one behaves as
+described above, so a contributor with no deployment is not stopped.
+
+**`--ages`** adds `release_age_days` and `fix_state` to each finding, in the
+text output and the JSON. The fix considered is the lowest `fixed` version above
+the installed one, and its date comes from the registry: npm's
+`time[<version>]`, PyPI's `upload_time_iso_8601` or the Go proxy's `.info`
+`Time`.
+
+| `fix_state` | Meaning                                                                                |
+| ----------- | -------------------------------------------------------------------------------------- |
+| `ready`     | A fix at least the age old                                                             |
+| `young`     | A fix under the age                                                                    |
+| `watching`  | No fix, and the advisory is under the age                                              |
+| `decide`    | No fix, and the advisory is past the age                                               |
+| `no-age`    | The lockfile's own age setting is missing or differs from the deployment's             |
+| `unknown`   | The registry could not be asked, or the advisory has no date                           |
+| `overdue`   | `ready` at or above the threshold, in a `gate_on_aged_fix` ecosystem; it blocks a scan |
+
+The lockfile's own setting is only checked against the age, never used as it:
+`npm config get min-release-age` (days), `pnpm config get minimumReleaseAge`
+(minutes), both run in the lockfile's directory, or `exclude-newer` in the
+nearest `uv.toml` up to the checkout, which must read `<n> days`. A lockfile with
+no such setting, such as `yarn.lock`, is `no-age`. `go.mod` is never `no-age`,
+because the `go` tool has no release age.
+
+**Gate.** In a `gate_on_aged_fix` ecosystem, a finding at or above the threshold
+with a fix at least the age old is `overdue` and blocks, `new` or `existing`. It
+is the only case in which an `existing` finding blocks. No fix, a younger fix or
+a failed lookup does not block one. A branch that removes a finding the base has
+passes, so two branches that each fix one overdue finding do not hold each other
+red; what a branch adds still blocks. The gate calls a registry only for such an
+ecosystem with `existing` findings at or above the threshold, and never without a
+deployment config. `blocking` in the JSON covers `overdue`, so `--ages` exits 1
+on one too; a plain `bin/ci vulns` calls no registry and does not know of it.
+
+**`--fix`** upgrades each `ready` finding at or above the threshold, one package
+at a time, in the lockfile's directory:
+
+| Lockfile            | Command                                       |
+| ------------------- | --------------------------------------------- |
+| `uv.lock`           | `uv lock --upgrade-package <pkg>`             |
+| `pnpm-lock.yaml`    | `pnpm update <pkg> --lockfile-only --no-save` |
+| `package-lock.json` | `npm update <pkg> --package-lock-only`        |
+
+It changes lockfiles only, never a manifest, and never refreshes a whole lock.
+The manager's own age setting still applies, so nothing younger gets through.
+Every other finding is left alone, `overdue` ones included. `--lockfile <path>`,
+relative to the working directory, limits the upgrades and the list to one
+lockfile. Then it re-scans and lists each package:
+
+```text
+ci-cd: vulns: fixed <pkg> <old> → <new> (<lockfile>)
+ci-cd: vulns: waiting <pkg> <fix_state>
+ci-cd: vulns: failed <pkg>
+ci-cd: vulns: <pkg> pinned in <manifest>
+```
+
+`pinned` means the manifest names the package and the upgrade left it at its
+version. `failed` means the command failed or the finding is still there, for
+example a transitive package held by its parent's range.
+
+`--fix` exits 1 on `failed` or `pinned` and 0 otherwise, whatever the re-scan
+would exit: an `existing` finding never fails a scan. `young`, `watching`,
+`decide`, `no-age` and `unknown` findings do not fail it, and with nothing `ready`
+it exits 0 and changes nothing.
+
+`--fix --json <path>` writes the re-scan's report, with `fix_state` on its
+findings, plus a `fixes` array of
+`{ outcome, package, lockfile, from, to, manifest, fix_state }`, each with the
+fields its `outcome` (`fixed`, `waiting`, `failed` or `pinned`) has.
 
 ## Toolchain Profiles
 

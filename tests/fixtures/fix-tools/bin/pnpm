@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+FAKE_TOOL=pnpm exec "$(dirname -- "$0")/npm" "$@"

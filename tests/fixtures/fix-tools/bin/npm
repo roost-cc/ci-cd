@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+# Fake npm, pnpm and uv for tests/run.sh (pnpm and uv call this file).
+#
+#   `config get <name>` prints FAKE_NPM_AGE (default 7) or FAKE_PNPM_AGE (default
+#   10080). Anything else is an upgrade: it is logged to FAKE_UPGRADE_LOG, and
+#   FAKE_UPGRADE_RESULT, when set, becomes what the scanner answers next, in
+#   FAKE_SCAN_DIR. FAKE_UPGRADE_FAIL makes the upgrade exit 1.
+set -eu
+
+tool=${FAKE_TOOL:-npm}
+if [ "${1:-}" = config ]; then
+  case $tool in
+  npm) printf '%s\n' "${FAKE_NPM_AGE-7}" ;;
+  pnpm) printf '%s\n' "${FAKE_PNPM_AGE-10080}" ;;
+  esac
+  exit 0
+fi
+
+printf '%s %s (in %s)\n' "$tool" "$*" "$PWD" >>"$FAKE_UPGRADE_LOG"
+if [ -n "${FAKE_UPGRADE_FAIL:-}" ]; then
+  echo 'fake upgrade failure' >&2
+  exit 1
+fi
+if [ -n "${FAKE_UPGRADE_RESULT:-}" ]; then
+  cp "$FAKE_UPGRADE_RESULT" "$FAKE_SCAN_DIR/osv-output.json"
+fi
