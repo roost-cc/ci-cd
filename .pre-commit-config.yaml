@@ -35,7 +35,7 @@ repos:
         entry: prettier --config .rrepo-shared/prettier.config.js --ignore-unknown --write
         language: node
         types_or: [javascript, jsx, ts, tsx, css, scss, json, yaml, markdown, html]
-        additional_dependencies: [prettier@3.6.2]
+        additional_dependencies: [prettier@3.9.10]
         exclude: ^\.rrepo-shared/
         stages: [pre-commit]
       - id: file-hygiene
