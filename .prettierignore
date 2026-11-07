@@ -1,0 +1,5 @@
+# Prettier must not format these. Every prettier run reads this file: the pre-commit hook, ppp,
+# and the editor hook that runs ppp after each edit.
+#
+# Invalid JSON on purpose (validation fixture).
+tests/fixtures/generic-command/malformed.json
