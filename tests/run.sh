@@ -269,6 +269,55 @@ EOF
     fail "a gate step rewrote the pushing worktree's index"
 ) || exit 1
 
+printf 'test: gate steps strip each git variable independently\n'
+# Every step of `ci run` and `ci gate` fails if GIT_DIR, GIT_WORK_TREE or
+# GIT_INDEX_FILE reaches it, whether the caller or the action env sets it.
+(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  STRIP_DIR="$TMP_ROOT/strip-git-vars"
+  mkdir -p "$STRIP_DIR"
+  probe='for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do if env | grep -q \"^$v=\"; then echo leaked-$v >&2; exit 17; fi; done; echo vars-absent'
+  write_config() {
+    cat >|"$STRIP_DIR/.ci-cd.json" <<EOF
+{
+  "version": 1,
+  "project": { "name": "strip-git-vars" },
+  "targets": { "local": {} },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": { "commands": ["$probe", "$probe"], "env": { $1 } },
+    "lint": { "commands": ["$probe"] }
+  }
+}
+EOF
+  }
+  check() {
+    label=$1 mode=$2 expected=$3
+    out="$STRIP_DIR/out"
+    if [ "$mode" = run ]; then
+      set -- run test
+    else
+      set -- gate
+    fi
+    "$ROOT/bin/ci" "$@" --working-directory "$STRIP_DIR" --target local --platform linux/amd64 >|"$out" 2>&1 ||
+      fail "$label: a step saw a git variable: $(cat "$out")"
+    count=$(grep -c '^vars-absent$' "$out" || true)
+    test "$count" = "$expected" || fail "$label: $count of $expected steps ran clean"
+  }
+  for mode in run gate; do
+    if [ "$mode" = run ]; then expected=2; else expected=3; fi
+    write_config ''
+    check "$mode empty" "$mode" "$expected"
+    for name in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do
+      (export "$name=bad-path" && check "$mode caller $name" "$mode" "$expected") || exit 1
+      write_config "\"$name\": \"bad-path\""
+      check "$mode action $name" "$mode" "$expected"
+    done
+    write_config '"GIT_DIR": "a", "GIT_WORK_TREE": "b", "GIT_INDEX_FILE": "c"'
+    (export GIT_DIR=a GIT_WORK_TREE=b GIT_INDEX_FILE=c && check "$mode caller and action all" "$mode" "$expected") || exit 1
+  done
+) || exit 1
+
 printf 'test: no-TTY pnpm purge-confirm default\n'
 # Headless (the test runner has no TTY): the runner injects pnpm_config_ci=true
 # so pnpm rebuilds node_modules without a TTY prompt in the pre-push gate. The
