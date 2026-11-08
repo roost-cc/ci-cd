@@ -2,5 +2,5 @@
   "instance": "roost-gh",
   "profile": "public-tool",
   "overrides": {},
-  "test_command": "sh tests/run.sh"
+  "test_command": "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh tests/run.sh"
 }
