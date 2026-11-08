@@ -60,7 +60,7 @@ repos:
     hooks:
       - id: test-gate
         name: test gate (local pre-push gate)
-        entry: sh tests/run.sh
+        entry: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh tests/run.sh
         language: system
         stages: [pre-push]
         always_run: true

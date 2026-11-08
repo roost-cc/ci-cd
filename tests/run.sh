@@ -226,6 +226,98 @@ fi
 assert_contains /tmp/ci-cd-gate-failing.out "gate-ran-lint"
 assert_contains /tmp/ci-cd-gate-failing.out "gate failed on 'test'"
 
+printf 'test: gate steps run without the hook GIT_DIR (linked-worktree push)\n'
+(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  HOOK_DIR="$TMP_ROOT/hook-env"
+  mkdir -p "$HOOK_DIR/step-tmp"
+  # The step's temp repo goes under TMP_ROOT, so the exit trap removes it.
+  export CI_FIXTURE_TMP="$HOOK_DIR/step-tmp"
+  git init -q --bare "$HOOK_DIR/remote.git"
+  git init -q -b main "$HOOK_DIR/main"
+  cat >"$HOOK_DIR/main/.ci-cd.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "hook-env" },
+  "targets": { "local": {} },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "commands": [
+        "d=$(mktemp -d \"$CI_FIXTURE_TMP/step.XXXXXX\") && cd \"$d\" && git init -q && echo x >x && git add x && git -c user.name=t -c user.email=t@t commit -qm fixture && echo gate-step-git-done"
+      ],
+      "env": { "GIT_DIR": "action-git-dir", "GIT_WORK_TREE": "action-wt", "GIT_INDEX_FILE": "action-index" }
+    }
+  }
+}
+EOF
+  git -C "$HOOK_DIR/main" add .ci-cd.json
+  git -C "$HOOK_DIR/main" -c user.name=t -c user.email=t@t commit -qm init
+  git -C "$HOOK_DIR/main" remote add origin "$HOOK_DIR/remote.git"
+  git -C "$HOOK_DIR/main" worktree add -q -b wt "$HOOK_DIR/wt"
+  printf '#!/bin/sh\nexec "%s/bin/ci" gate --target local --platform linux/amd64\n' "$ROOT" \
+    >"$HOOK_DIR/main/.git/hooks/pre-push"
+  chmod +x "$HOOK_DIR/main/.git/hooks/pre-push"
+  head_before=$(git -C "$HOOK_DIR/wt" rev-parse HEAD)
+  index_before=$(git -C "$HOOK_DIR/wt" ls-files --stage)
+  git -C "$HOOK_DIR/wt" push -q origin wt >/tmp/ci-cd-hook-env.out 2>&1 ||
+    fail "push from the linked worktree must pass the gate"
+  assert_contains /tmp/ci-cd-hook-env.out "gate-step-git-done"
+  test "$(git -C "$HOOK_DIR/wt" rev-parse HEAD)" = "$head_before" ||
+    fail "a gate step moved the pushing worktree's HEAD"
+  test "$(git -C "$HOOK_DIR/wt" ls-files --stage)" = "$index_before" ||
+    fail "a gate step rewrote the pushing worktree's index"
+) || exit 1
+
+printf 'test: gate steps strip each git variable independently\n'
+# Every step of `ci run` and `ci gate` fails if GIT_DIR, GIT_WORK_TREE or
+# GIT_INDEX_FILE reaches it, whether the caller or the action env sets it.
+(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  STRIP_DIR="$TMP_ROOT/strip-git-vars"
+  mkdir -p "$STRIP_DIR"
+  probe='for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do if env | grep -q \"^$v=\"; then echo leaked-$v >&2; exit 17; fi; done; echo vars-absent'
+  write_config() {
+    cat >|"$STRIP_DIR/.ci-cd.json" <<EOF
+{
+  "version": 1,
+  "project": { "name": "strip-git-vars" },
+  "targets": { "local": {} },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": { "commands": ["$probe", "$probe"], "env": { $1 } },
+    "lint": { "commands": ["$probe"] }
+  }
+}
+EOF
+  }
+  check() {
+    label=$1 mode=$2 expected=$3
+    out="$STRIP_DIR/out"
+    if [ "$mode" = run ]; then
+      set -- run test
+    else
+      set -- gate
+    fi
+    "$ROOT/bin/ci" "$@" --working-directory "$STRIP_DIR" --target local --platform linux/amd64 >|"$out" 2>&1 ||
+      fail "$label: a step saw a git variable: $(cat "$out")"
+    count=$(grep -c '^vars-absent$' "$out" || true)
+    test "$count" = "$expected" || fail "$label: $count of $expected steps ran clean"
+  }
+  for mode in run gate; do
+    if [ "$mode" = run ]; then expected=2; else expected=3; fi
+    write_config ''
+    check "$mode empty" "$mode" "$expected"
+    for name in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do
+      (export "$name=bad-path" && check "$mode caller $name" "$mode" "$expected") || exit 1
+      write_config "\"$name\": \"bad-path\""
+      check "$mode action $name" "$mode" "$expected"
+    done
+    write_config '"GIT_DIR": "a", "GIT_WORK_TREE": "b", "GIT_INDEX_FILE": "c"'
+    (export GIT_DIR=a GIT_WORK_TREE=b GIT_INDEX_FILE=c && check "$mode caller and action all" "$mode" "$expected") || exit 1
+  done
+) || exit 1
+
 printf 'test: no-TTY pnpm purge-confirm default\n'
 # Headless (the test runner has no TTY): the runner injects pnpm_config_ci=true
 # so pnpm rebuilds node_modules without a TTY prompt in the pre-push gate. The
@@ -955,6 +1047,8 @@ aged go-young --ages
 assert_state go-young young
 
 printf 'test: the deployment config\n'
+# The operator's shell may set the real deployment config; this case needs none.
+unset CI_CD_DEPLOYMENT_CONFIG
 base_repo no-config "$WITH_FIX"
 COMPARE_PATH=$FIX_PATH compare no-config --ages
 test "$COMPARE_CODE" -eq 1 || fail "--ages without a deployment config must fail"
