@@ -995,6 +995,8 @@ test "$COMPARE_CODE" -eq 0 || fail "--fix must fix a pnpm finding"
 assert_contains "$UPGRADE_LOG" "pnpm update lodash --lockfile-only --no-save (in $COMPARE_DIR/fix-pnpm)"
 
 FIXED_NAME=uv
+# The operator's shell may set the real deployment config; this case needs none.
+unset CI_CD_DEPLOYMENT_CONFIG
 AGED_ENV="FAKE_UPGRADE_RESULT=$(fixed_result '{"lockfile":"assistant/uv.lock","ecosystem":"PyPI","package":"aiohttp","version":"3.14.4","clean":true}')"
 base_repo fix-uv "$UV_FINDING"
 printf 'exclude-newer = "7 days"\n' >"$COMPARE_DIR/fix-uv/uv.toml"
