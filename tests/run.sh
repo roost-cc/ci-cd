@@ -230,7 +230,9 @@ printf 'test: gate steps run without the hook GIT_DIR (linked-worktree push)\n'
 (
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   HOOK_DIR="$TMP_ROOT/hook-env"
-  mkdir -p "$HOOK_DIR"
+  mkdir -p "$HOOK_DIR/step-tmp"
+  # The step's temp repo goes under TMP_ROOT, so the exit trap removes it.
+  export CI_FIXTURE_TMP="$HOOK_DIR/step-tmp"
   git init -q --bare "$HOOK_DIR/remote.git"
   git init -q -b main "$HOOK_DIR/main"
   cat >"$HOOK_DIR/main/.ci-cd.json" <<'EOF'
@@ -242,8 +244,9 @@ printf 'test: gate steps run without the hook GIT_DIR (linked-worktree push)\n'
   "actions": {
     "test": {
       "commands": [
-        "d=$(mktemp -d) && cd \"$d\" && git init -q && echo x >x && git add x && git -c user.name=t -c user.email=t@t commit -qm fixture && echo gate-step-git-done"
-      ]
+        "d=$(mktemp -d \"$CI_FIXTURE_TMP/step.XXXXXX\") && cd \"$d\" && git init -q && echo x >x && git add x && git -c user.name=t -c user.email=t@t commit -qm fixture && echo gate-step-git-done"
+      ],
+      "env": { "GIT_DIR": "action-git-dir", "GIT_WORK_TREE": "action-wt", "GIT_INDEX_FILE": "action-index" }
     }
   }
 }
