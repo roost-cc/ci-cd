@@ -493,6 +493,26 @@ EOF
   check_paths slow
   test ! -e "$RECORD" || fail "an interrupted check must write no record"
   assert_no_worktree slow
+
+  # a step that backgrounds a long process does not delay ci check
+  cat >"$CHECK_DIR/background.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-background" },
+  "actions": { "test": { "commands": ["sleep 6.4242 & echo step-done"] } }
+}
+EOF
+  check_repo background "$CHECK_DIR/background.json"
+  started=$(date +%s)
+  run_check background HEAD
+  elapsed=$(($(date +%s) - started))
+  pkill -f '^sleep 6[.]4242$' || true
+  test "$CHECK_CODE" -eq 0 || fail "the background step must pass: $(cat "$CHECK_DIR/background.out")"
+  test "$elapsed" -lt 4 || fail "a background process must not delay the check: took ${elapsed}s"
+  check_paths background
+  assert_contains "$LOG" "step-done"
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_no_worktree background
 ) || exit 1
 
 printf 'test: gate reads .ci-cd.json promotion\n'
