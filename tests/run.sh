@@ -331,6 +331,15 @@ printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
     fail "check without a commit must fail"
   fi
   assert_contains "$CHECK_DIR/no-commit.out" "Command 'check' requires a commit."
+  # check refuses an absolute --config, and any other: only the commit's own config counts.
+  for config in "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json" ../../outside.json .ci-cd.json; do
+    if TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check HEAD --config "$config" --working-directory "$ROOT" \
+      >|"$CHECK_DIR/config.out" 2>&1; then
+      fail "check must refuse --config $config"
+    fi
+    assert_contains "$CHECK_DIR/config.out" "Command 'check' reads the commit's own .ci-cd.json; it takes no --config."
+  done
+  test -z "$(ls -A "$CHECK_TMP")" || fail "a refused --config must add no worktree"
 
   # Makes the repo $1 with $2 as its committed .ci-cd.json.
   check_repo() {
