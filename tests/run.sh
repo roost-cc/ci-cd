@@ -462,6 +462,37 @@ EOF
   check_repo crash "$CHECK_DIR/crash.json"
   run_check crash HEAD
   assert_check_fails crash '["test"]'
+
+  # an interrupted check stops its step, removes the worktree and writes no record
+  cat >"$CHECK_DIR/slow.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-slow" },
+  "actions": { "test": { "commands": ["echo step-started; sleep 30.4242"] } }
+}
+EOF
+  check_repo slow "$CHECK_DIR/slow.json"
+  TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check HEAD --working-directory "$CHECK_DIR/slow" >"$CHECK_DIR/slow.out" 2>&1 &
+  ci_pid=$!
+  tries=0
+  until grep -q step-started "$CHECK_DIR/slow.out"; do
+    tries=$((tries + 1))
+    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$CHECK_DIR/slow.out")"
+    sleep 0.1
+  done
+  kill -TERM "$ci_pid"
+  set +e
+  wait "$ci_pid"
+  slow_code=$?
+  set -e
+  test "$slow_code" -eq 143 || fail "an interrupted check must exit 143, got $slow_code: $(cat "$CHECK_DIR/slow.out")"
+  # Anchored, so the pattern does not match a shell whose command line holds it.
+  if pgrep -f '^sleep 30[.]4242$' >/dev/null; then
+    fail "the interrupted check left its step running: $(pgrep -af '^sleep 30[.]4242$')"
+  fi
+  check_paths slow
+  test ! -e "$RECORD" || fail "an interrupted check must write no record"
+  assert_no_worktree slow
 ) || exit 1
 
 printf 'test: gate reads .ci-cd.json promotion\n'
