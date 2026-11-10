@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-promotion-check-record"
+  },
+  "promotion": "check-record",
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "lint": {
+      "commands": ["echo gate-ran-lint"]
+    },
+    "test": {
+      "commands": ["echo gate-ran-test"]
+    }
+  }
+}

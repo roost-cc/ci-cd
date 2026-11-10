@@ -66,6 +66,10 @@
         }
       }
     },
+    "promotion": {
+      "enum": ["pre-push-gate", "check-record"],
+      "description": "How a commit reaches main. pre-push-gate: the pre-push hook (bin/ci gate) runs the full gate. check-record: a push to refs/heads/main passes only with a passing check record (bin/ci check <commit>) for the pushed commit, and a push to any other branch runs no check. Absent: the full gate runs, with a warning."
+    },
     "actions": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/action" },

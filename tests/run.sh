@@ -318,6 +318,329 @@ EOF
   done
 ) || exit 1
 
+printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
+(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  CHECK_DIR="$TMP_ROOT/check"
+  # ci check makes its worktrees here, so a leftover shows.
+  CHECK_TMP="$CHECK_DIR/tmp"
+  mkdir -p "$CHECK_TMP"
+  "$ROOT/bin/ci" help >"$CHECK_DIR/help.out"
+  assert_contains "$CHECK_DIR/help.out" "bin/ci check <commit>"
+  if "$ROOT/bin/ci" check >"$CHECK_DIR/no-commit.out" 2>&1; then
+    fail "check without a commit must fail"
+  fi
+  assert_contains "$CHECK_DIR/no-commit.out" "Command 'check' requires a commit."
+  # check refuses an absolute --config, and any other: only the commit's own config counts.
+  for config in "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json" ../../outside.json .ci-cd.json; do
+    if TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check HEAD --config "$config" --working-directory "$ROOT" \
+      >|"$CHECK_DIR/config.out" 2>&1; then
+      fail "check must refuse --config $config"
+    fi
+    assert_contains "$CHECK_DIR/config.out" "Command 'check' reads the commit's own .ci-cd.json; it takes no --config."
+  done
+  test -z "$(ls -A "$CHECK_TMP")" || fail "a refused --config must add no worktree"
+
+  # Makes the repo $1 with $2 as its committed .ci-cd.json.
+  check_repo() {
+    git init -q -b main "$CHECK_DIR/$1"
+    cp "$2" "$CHECK_DIR/$1/.ci-cd.json"
+    git -C "$CHECK_DIR/$1" add .ci-cd.json
+    git -C "$CHECK_DIR/$1" -c user.name=t -c user.email=t@t commit -qm init
+  }
+  # Runs `ci check $2 [args]` in the repo $1; sets CHECK_CODE, output in $1.out.
+  run_check() {
+    repo=$1 commit=$2
+    shift 2
+    set +e
+    TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check "$commit" --working-directory "$CHECK_DIR/$repo" "$@" \
+      >"$CHECK_DIR/$repo.out" 2>&1
+    CHECK_CODE=$?
+    set -e
+  }
+  # The record and log paths of the repo $1's HEAD.
+  check_paths() {
+    head=$(git -C "$CHECK_DIR/$1" rev-parse HEAD)
+    RECORD="$CHECK_DIR/$1/.git/ci-cd/checks/$head.json"
+    LOG="$CHECK_DIR/$1/.git/ci-cd/checks/$head.log"
+  }
+  assert_no_worktree() {
+    test "$(git -C "$CHECK_DIR/$1" worktree list | wc -l)" -eq 1 ||
+      fail "$1: a worktree was left behind: $(git -C "$CHECK_DIR/$1" worktree list)"
+    test -z "$(ls -A "$CHECK_TMP")" || fail "$1: a temp directory was left behind: $(ls -A "$CHECK_TMP")"
+  }
+  # The repo $1's check failed with a fail record whose steps are $2 (JSON).
+  assert_check_fails() {
+    test "$CHECK_CODE" -ne 0 || fail "$1: check must exit non-zero"
+    check_paths "$1"
+    assert_json "$RECORD" "r.verdict === 'fail' && JSON.stringify(r.steps) === '$2'"
+    assert_no_worktree "$1"
+  }
+  gate='--target local --platform linux/amd64'
+
+  check_repo pass "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json"
+  run_check pass HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "check of a passing commit must exit 0: $(cat "$CHECK_DIR/pass.out")"
+  check_paths pass
+  tree=$(git -C "$CHECK_DIR/pass" rev-parse 'HEAD^{tree}')
+  assert_json "$RECORD" "r.commit === '$head' && /^[0-9a-f]{40}$/.test(r.commit) && r.tree === '$tree'"
+  assert_json "$RECORD" "r.verdict === 'pass' && JSON.stringify(r.steps) === '[\"lint\",\"test\"]'"
+  assert_json "$RECORD" "r.started === new Date(r.started).toISOString() && r.finished >= r.started"
+  assert_contains "$LOG" "gate-ran-lint"
+  assert_contains "$LOG" "gate-ran-test"
+  assert_contains "$LOG" "gate passed"
+  assert_contains "$CHECK_DIR/pass.out" "gate-ran-test"
+  assert_no_worktree pass
+
+  # A linked worktree of the clone writes to the clone's common git directory.
+  git -C "$CHECK_DIR/pass" worktree add -q -b linked "$CHECK_DIR/pass-linked"
+  git -C "$CHECK_DIR/pass-linked" -c user.name=t -c user.email=t@t commit -q --allow-empty -m linked
+  run_check pass-linked HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "check from a linked worktree must pass: $(cat "$CHECK_DIR/pass-linked.out")"
+  linked_head=$(git -C "$CHECK_DIR/pass-linked" rev-parse HEAD)
+  assert_json "$CHECK_DIR/pass/.git/ci-cd/checks/$linked_head.json" "r.verdict === 'pass'"
+  git -C "$CHECK_DIR/pass" worktree remove "$CHECK_DIR/pass-linked"
+
+  check_repo failing "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  run_check failing HEAD $gate
+  assert_check_fails failing '["lint","test"]'
+  assert_contains "$LOG" "gate-ran-lint"
+  assert_contains "$LOG" "gate failed on 'test'"
+
+  # An untracked file that fails lint in the checkout does not reach the check.
+  cat >"$CHECK_DIR/dirty.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-dirty" },
+  "targets": { "local": {} },
+  "platforms": ["linux/amd64"],
+  "actions": { "lint": { "commands": ["test ! -e lint-fails"] } }
+}
+EOF
+  check_repo dirty "$CHECK_DIR/dirty.json"
+  : >"$CHECK_DIR/dirty/lint-fails"
+  if "$ROOT/bin/ci" gate --working-directory "$CHECK_DIR/dirty" $gate >"$CHECK_DIR/dirty-gate.out" 2>&1; then
+    fail "the dirty file must fail lint in the checkout"
+  fi
+  run_check dirty HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "an uncommitted file must not change the verdict: $(cat "$CHECK_DIR/dirty.out")"
+  check_paths dirty
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_no_worktree dirty
+
+  run_check pass 0123456789abcdef0123456789abcdef01234567 $gate
+  test "$CHECK_CODE" -ne 0 || fail "check of an unknown commit must fail"
+  assert_contains "$CHECK_DIR/pass.out" "check: not a commit: 0123456789abcdef0123456789abcdef01234567"
+  test ! -e "$CHECK_DIR/pass/.git/ci-cd/checks/0123456789abcdef0123456789abcdef01234567.json" ||
+    fail "an unknown commit must leave no record"
+  assert_no_worktree pass
+
+  check_repo missing-tool "$ROOT/tests/fixtures/missing-tool/.ci-cd.json"
+  run_check missing-tool HEAD
+  assert_check_fails missing-tool '["test"]'
+  assert_contains "$LOG" "requires missing tool"
+
+  printf '{ "version": 1,\n' >"$CHECK_DIR/malformed.json"
+  check_repo malformed "$CHECK_DIR/malformed.json"
+  run_check malformed HEAD $gate
+  assert_check_fails malformed '[]'
+  assert_contains "$LOG" "Malformed JSON"
+
+  printf '{ "version": 2, "project": { "name": "check-invalid" }, "actions": {} }\n' >"$CHECK_DIR/invalid.json"
+  check_repo invalid "$CHECK_DIR/invalid.json"
+  run_check invalid HEAD
+  assert_check_fails invalid '[]'
+  assert_contains "$LOG" "Config validation failed"
+
+  cat >"$CHECK_DIR/crash.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-crash" },
+  "actions": { "test": { "commands": ["kill -KILL $$"] } }
+}
+EOF
+  check_repo crash "$CHECK_DIR/crash.json"
+  run_check crash HEAD
+  assert_check_fails crash '["test"]'
+
+  # an interrupted check stops its step, removes the worktree and writes no record
+  cat >"$CHECK_DIR/slow.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-slow" },
+  "actions": { "test": { "commands": ["echo step-started; sleep 30.4242"] } }
+}
+EOF
+  check_repo slow "$CHECK_DIR/slow.json"
+  TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check HEAD --working-directory "$CHECK_DIR/slow" >"$CHECK_DIR/slow.out" 2>&1 &
+  ci_pid=$!
+  tries=0
+  until grep -q step-started "$CHECK_DIR/slow.out"; do
+    tries=$((tries + 1))
+    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$CHECK_DIR/slow.out")"
+    sleep 0.1
+  done
+  kill -TERM "$ci_pid"
+  set +e
+  wait "$ci_pid"
+  slow_code=$?
+  set -e
+  test "$slow_code" -eq 143 || fail "an interrupted check must exit 143, got $slow_code: $(cat "$CHECK_DIR/slow.out")"
+  # Anchored, so the pattern does not match a shell whose command line holds it.
+  if pgrep -f '^sleep 30[.]4242$' >/dev/null; then
+    fail "the interrupted check left its step running: $(pgrep -af '^sleep 30[.]4242$')"
+  fi
+  check_paths slow
+  test ! -e "$RECORD" || fail "an interrupted check must write no record"
+  assert_no_worktree slow
+
+  # a step that backgrounds a long process does not delay ci check
+  cat >"$CHECK_DIR/background.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-background" },
+  "actions": { "test": { "commands": ["sleep 6.4242 & echo step-done"] } }
+}
+EOF
+  check_repo background "$CHECK_DIR/background.json"
+  started=$(date +%s)
+  run_check background HEAD
+  elapsed=$(($(date +%s) - started))
+  pkill -f '^sleep 6[.]4242$' || true
+  test "$CHECK_CODE" -eq 0 || fail "the background step must pass: $(cat "$CHECK_DIR/background.out")"
+  test "$elapsed" -lt 4 || fail "a background process must not delay the check: took ${elapsed}s"
+  check_paths background
+  assert_contains "$LOG" "step-done"
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_no_worktree background
+
+  # a check that leaves a read-only directory still writes its record
+  cat >"$CHECK_DIR/readonly.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-readonly" },
+  "actions": { "test": { "commands": ["mkdir -p ro/sub && touch ro/sub/f && chmod 555 ro/sub"] } }
+}
+EOF
+  check_repo readonly "$CHECK_DIR/readonly.json"
+  run_check readonly HEAD
+  # The worktree cannot be removed; make it writable again, then remove it.
+  chmod -R u+w "$CHECK_TMP"
+  rm -rf "${CHECK_TMP:?}"/*
+  git -C "$CHECK_DIR/readonly" worktree prune
+  test "$CHECK_CODE" -eq 0 || fail "a passing check must exit 0 when its worktree cannot be removed: $(cat "$CHECK_DIR/readonly.out")"
+  check_paths readonly
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_contains "$CHECK_DIR/readonly.out" "ci-cd: warning: could not remove the check worktree"
+  assert_no_worktree readonly
+) || exit 1
+
+printf 'test: gate reads .ci-cd.json promotion\n'
+(
+  # This suite may itself run in a pre-push hook, which sets these.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE PRE_COMMIT_REMOTE_BRANCH PRE_COMMIT_TO_REF
+  PROMO_DIR="$TMP_ROOT/promotion"
+  mkdir -p "$PROMO_DIR"
+  gate='--target local --platform linux/amd64'
+  warning='ci-cd: .ci-cd.json sets no "promotion"; the full gate runs in the hook (E70 R11)'
+
+  printf '{ "version": 1, "project": { "name": "bad-promotion" }, "promotion": "x", "actions": {} }\n' \
+    >"$PROMO_DIR/bad.json"
+  if "$ROOT/bin/ci" validate --config "$PROMO_DIR/bad.json" >"$PROMO_DIR/bad.out" 2>&1; then
+    fail "validate must refuse an unknown promotion"
+  fi
+  assert_contains "$PROMO_DIR/bad.out" "promotion must be one of pre-push-gate, check-record; got 'x'."
+  run_ci gate-promotion-check-record validate $gate
+  run_ci gate-promotion-pre-push validate $gate
+
+  run_ci gate-test-only gate $gate >"$PROMO_DIR/absent.out"
+  assert_contains "$PROMO_DIR/absent.out" "$warning"
+  assert_contains "$PROMO_DIR/absent.out" "gate-ran-test"
+  # The key absent on a push to main is still today's gate.
+  env PRE_COMMIT_REMOTE_BRANCH=refs/heads/main PRE_COMMIT_TO_REF=0123456789abcdef0123456789abcdef01234567 \
+    "$ROOT/bin/ci" gate --working-directory "$ROOT/tests/fixtures/gate-test-only" $gate >"$PROMO_DIR/absent-main.out"
+  assert_contains "$PROMO_DIR/absent-main.out" "gate-ran-test"
+
+  run_ci gate-promotion-pre-push gate $gate >"$PROMO_DIR/pre-push.out"
+  assert_contains "$PROMO_DIR/pre-push.out" "gate-ran-test"
+  assert_not_contains 'sets no "promotion"' "$PROMO_DIR/pre-push.out"
+
+  # Not started by a push: the full gate.
+  run_ci gate-promotion-check-record gate $gate >"$PROMO_DIR/unpushed.out"
+  assert_contains "$PROMO_DIR/unpushed.out" "gate-ran-lint"
+  assert_contains "$PROMO_DIR/unpushed.out" "gate-ran-test"
+  assert_not_contains 'sets no "promotion"' "$PROMO_DIR/unpushed.out"
+
+  env PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature PRE_COMMIT_TO_REF=0123456789abcdef0123456789abcdef01234567 \
+    "$ROOT/bin/ci" gate --working-directory "$ROOT/tests/fixtures/gate-promotion-check-record" $gate \
+    >"$PROMO_DIR/branch.out" 2>&1 || fail "a branch push must pass: $(cat "$PROMO_DIR/branch.out")"
+  assert_contains "$PROMO_DIR/branch.out" "a push to refs/heads/feature is not a promotion; no check runs"
+  assert_not_contains 'gate-ran-|action=' "$PROMO_DIR/branch.out"
+
+  # A push to main reads the check record of the pushed commit.
+  REPO="$PROMO_DIR/repo"
+  git init -q -b main "$REPO"
+  cp "$ROOT/tests/fixtures/gate-promotion-check-record/.ci-cd.json" "$REPO/.ci-cd.json"
+  git -C "$REPO" add .ci-cd.json
+  git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm init
+  head=$(git -C "$REPO" rev-parse HEAD)
+  RECORD="$REPO/.git/ci-cd/checks/$head.json"
+  # Runs the gate as a push of $1 to main, with the env assignments $2...; sets
+  # GATE_CODE, output in $PROMO_DIR/main.out.
+  push_main() {
+    to_ref=$1
+    shift
+    set +e
+    env PRE_COMMIT_REMOTE_BRANCH=refs/heads/main ${to_ref:+PRE_COMMIT_TO_REF=$to_ref} "$@" \
+      "$ROOT/bin/ci" gate --working-directory "$REPO" $gate >|"$PROMO_DIR/main.out" 2>&1
+    GATE_CODE=$?
+    set -e
+  }
+  # The push of $1 is refused for the reason $2 and prints `ci check $3`.
+  assert_refused() {
+    test "$GATE_CODE" -ne 0 || fail "$2: the push must be refused: $(cat "$PROMO_DIR/main.out")"
+    assert_contains "$PROMO_DIR/main.out" "$2"
+    assert_contains "$PROMO_DIR/main.out" "ci check $3"
+    assert_not_contains 'gate-ran-' "$PROMO_DIR/main.out"
+  }
+
+  push_main ''
+  assert_refused '' "PRE_COMMIT_TO_REF is not a commit ID" '<commit>'
+  push_main "$head"
+  assert_refused "$head" "no readable check record for $head" "$head"
+
+  TMPDIR="$PROMO_DIR" "$ROOT/bin/ci" check HEAD --working-directory "$REPO" $gate >"$PROMO_DIR/check.out" 2>&1 ||
+    fail "check must pass: $(cat "$PROMO_DIR/check.out")"
+  push_main "$head"
+  test "$GATE_CODE" -eq 0 || fail "a passing record must pass the push: $(cat "$PROMO_DIR/main.out")"
+  assert_contains "$PROMO_DIR/main.out" "check record for $head: pass"
+  assert_not_contains 'gate-ran-' "$PROMO_DIR/main.out"
+
+  # The record lookup's git has a 10-second timeout; a timeout refuses.
+  mkdir -p "$PROMO_DIR/slow-git"
+  printf '#!/bin/sh\nexec sleep 30\n' >"$PROMO_DIR/slow-git/git"
+  chmod +x "$PROMO_DIR/slow-git/git"
+  started=$(date +%s)
+  push_main "$head" PATH="$PROMO_DIR/slow-git:$PATH"
+  elapsed=$(($(date +%s) - started))
+  assert_refused "$head" "git cannot name the git common directory" "$head"
+  test "$elapsed" -lt 20 || fail "the git timeout must refuse in about 10 seconds, took ${elapsed}s"
+
+  sed 's/"verdict": "pass"/"verdict": "fail"/' "$RECORD" >"$PROMO_DIR/fail.json"
+  cp "$PROMO_DIR/fail.json" "$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the check of $head did not pass (fail)" "$head"
+
+  other=0123456789abcdef0123456789abcdef01234567
+  printf '{ "commit": "%s", "verdict": "pass" }\n' "$other" >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the check record is not for $head" "$head"
+
+  printf 'not json\n' >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "no readable check record for $head" "$head"
+) || exit 1
+
 printf 'test: no-TTY pnpm purge-confirm default\n'
 # Headless (the test runner has no TTY): the runner injects pnpm_config_ci=true
 # so pnpm rebuilds node_modules without a TTY prompt in the pre-push gate. The
@@ -469,13 +792,6 @@ assert_contains /tmp/ci-cd-vulns-bad-config.out "vulns.fail_on must be one of"
 printf 'test: vulns --json writes a result for every outcome\n'
 JSON_DIR="$TMP_ROOT/vulns-json"
 mkdir -p "$JSON_DIR"
-# Passes when the JS expression holds for the parsed result `r`.
-assert_json() {
-  node -e '
-    const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-    if (!eval(process.argv[2])) process.exit(1);
-  ' "$1" "$2" || fail "expected $1 to satisfy: $2"
-}
 # Runs a vulns case without and with --json, each on its own copy of the
 # cache, and checks stdout, stderr and the exit code are the same. Extra env
 # goes after the case name as NAME=value words.
