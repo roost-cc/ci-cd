@@ -158,6 +158,7 @@ bin/ci list-actions --config .ci-cd.json
 bin/ci explain test --config .ci-cd.json
 bin/ci run test --config .ci-cd.json --target ci --platform linux/amd64
 bin/ci gate --config .ci-cd.json --target local --platform linux/amd64
+bin/ci check HEAD --target local --platform linux/amd64
 bin/ci vulns --working-directory . --fail-on high
 ```
 
@@ -178,6 +179,9 @@ gate then runs `vulns` (see [Vulnerability Scan](#vulnerability-scan)). This is
 what the shared pre-push hook invokes, so no action name is hardcoded in the
 scaffold.
 
+`check <commit>` runs the same steps as `gate` on exactly one commit. See
+[Checking One Commit](#checking-one-commit).
+
 `vulns` scans the checkout's lockfiles for known vulnerabilities with
 osv-scanner and fails on what the branch introduces. It needs no `.ci-cd.json`;
 see
@@ -187,6 +191,57 @@ see
 from another checkout location. Relative config paths, action
 `working_directory` values, and artifact paths are resolved from that consumer
 root.
+
+## Checking One Commit
+
+```sh
+bin/ci check <commit> [--target <name>] [--platform <name>] [--working-directory <clone>]
+```
+
+`check` runs the gate steps on one commit, outside any git operation. In order:
+
+1. It resolves `<commit>` (any name git accepts, such as `HEAD` or a branch) to
+   its 40-character ID.
+2. It adds a throwaway worktree, detached at the commit, in a new directory
+   under the system temp directory (`TMPDIR`). The worktree directory has the
+   same name as the clone's directory.
+3. It runs the steps of `gate` there: the `lint`, `typecheck` and `test`
+   actions that the commit's own `.ci-cd.json` declares, then `vulns` if the
+   commit declares a `vulns` block. Uncommitted and untracked files of the
+   clone are not in the worktree, so they never change the result.
+4. It writes the check record and the log, then removes the worktree,
+   whatever happened. It exits 0 only when every step passed.
+
+The check record is `<git-common-dir>/ci-cd/checks/<commit>.json`, for
+example `.git/ci-cd/checks/<commit>.json` in an ordinary clone:
+
+```json
+{
+  "commit": "<40 hex>",
+  "tree": "<40 hex>",
+  "verdict": "pass",
+  "steps": ["lint", "test"],
+  "started": "2026-11-10T09:00:00.000Z",
+  "finished": "2026-11-10T09:07:00.000Z"
+}
+```
+
+- `verdict` is `pass` or `fail`. A failed check also writes a record, with
+  `fail`.
+- `steps` names the steps that started, in order. A check that stops at
+  `test` lists `test` last.
+- `<commit>.log`, beside the record, holds everything the check printed.
+- A check that cannot run fails closed: an invalid or malformed
+  `.ci-cd.json`, a missing tool and a step that crashes each exit non-zero
+  and write a `fail` record. An unknown commit exits non-zero and writes no
+  record.
+- An interrupted check (`SIGINT`, `SIGTERM` or `SIGHUP`) removes its worktree
+  and writes no record. An older record of the same commit stays.
+
+Linked worktrees of a clone share its git common directory, so a check run
+from one worktree is found from every other. A check can take minutes: start
+it in another terminal, do other work, and read the record and the log when it
+is done.
 
 ## Vulnerability Scan
 

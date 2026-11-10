@@ -318,6 +318,143 @@ EOF
   done
 ) || exit 1
 
+printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
+(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  CHECK_DIR="$TMP_ROOT/check"
+  # ci check makes its worktrees here, so a leftover shows.
+  CHECK_TMP="$CHECK_DIR/tmp"
+  mkdir -p "$CHECK_TMP"
+  "$ROOT/bin/ci" help >"$CHECK_DIR/help.out"
+  assert_contains "$CHECK_DIR/help.out" "bin/ci check <commit>"
+  if "$ROOT/bin/ci" check >"$CHECK_DIR/no-commit.out" 2>&1; then
+    fail "check without a commit must fail"
+  fi
+  assert_contains "$CHECK_DIR/no-commit.out" "Command 'check' requires a commit."
+
+  # Makes the repo $1 with $2 as its committed .ci-cd.json.
+  check_repo() {
+    git init -q -b main "$CHECK_DIR/$1"
+    cp "$2" "$CHECK_DIR/$1/.ci-cd.json"
+    git -C "$CHECK_DIR/$1" add .ci-cd.json
+    git -C "$CHECK_DIR/$1" -c user.name=t -c user.email=t@t commit -qm init
+  }
+  # Runs `ci check $2 [args]` in the repo $1; sets CHECK_CODE, output in $1.out.
+  run_check() {
+    repo=$1 commit=$2
+    shift 2
+    set +e
+    TMPDIR="$CHECK_TMP" "$ROOT/bin/ci" check "$commit" --working-directory "$CHECK_DIR/$repo" "$@" \
+      >"$CHECK_DIR/$repo.out" 2>&1
+    CHECK_CODE=$?
+    set -e
+  }
+  # The record and log paths of the repo $1's HEAD.
+  check_paths() {
+    head=$(git -C "$CHECK_DIR/$1" rev-parse HEAD)
+    RECORD="$CHECK_DIR/$1/.git/ci-cd/checks/$head.json"
+    LOG="$CHECK_DIR/$1/.git/ci-cd/checks/$head.log"
+  }
+  assert_no_worktree() {
+    test "$(git -C "$CHECK_DIR/$1" worktree list | wc -l)" -eq 1 ||
+      fail "$1: a worktree was left behind: $(git -C "$CHECK_DIR/$1" worktree list)"
+    test -z "$(ls -A "$CHECK_TMP")" || fail "$1: a temp directory was left behind: $(ls -A "$CHECK_TMP")"
+  }
+  # The repo $1's check failed with a fail record whose steps are $2 (JSON).
+  assert_check_fails() {
+    test "$CHECK_CODE" -ne 0 || fail "$1: check must exit non-zero"
+    check_paths "$1"
+    assert_json "$RECORD" "r.verdict === 'fail' && JSON.stringify(r.steps) === '$2'"
+    assert_no_worktree "$1"
+  }
+  gate='--target local --platform linux/amd64'
+
+  check_repo pass "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json"
+  run_check pass HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "check of a passing commit must exit 0: $(cat "$CHECK_DIR/pass.out")"
+  check_paths pass
+  tree=$(git -C "$CHECK_DIR/pass" rev-parse 'HEAD^{tree}')
+  assert_json "$RECORD" "r.commit === '$head' && /^[0-9a-f]{40}$/.test(r.commit) && r.tree === '$tree'"
+  assert_json "$RECORD" "r.verdict === 'pass' && JSON.stringify(r.steps) === '[\"lint\",\"test\"]'"
+  assert_json "$RECORD" "r.started === new Date(r.started).toISOString() && r.finished >= r.started"
+  assert_contains "$LOG" "gate-ran-lint"
+  assert_contains "$LOG" "gate-ran-test"
+  assert_contains "$LOG" "gate passed"
+  assert_contains "$CHECK_DIR/pass.out" "gate-ran-test"
+  assert_no_worktree pass
+
+  # A linked worktree of the clone writes to the clone's common git directory.
+  git -C "$CHECK_DIR/pass" worktree add -q -b linked "$CHECK_DIR/pass-linked"
+  git -C "$CHECK_DIR/pass-linked" -c user.name=t -c user.email=t@t commit -q --allow-empty -m linked
+  run_check pass-linked HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "check from a linked worktree must pass: $(cat "$CHECK_DIR/pass-linked.out")"
+  linked_head=$(git -C "$CHECK_DIR/pass-linked" rev-parse HEAD)
+  assert_json "$CHECK_DIR/pass/.git/ci-cd/checks/$linked_head.json" "r.verdict === 'pass'"
+  git -C "$CHECK_DIR/pass" worktree remove "$CHECK_DIR/pass-linked"
+
+  check_repo failing "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  run_check failing HEAD $gate
+  assert_check_fails failing '["lint","test"]'
+  assert_contains "$LOG" "gate-ran-lint"
+  assert_contains "$LOG" "gate failed on 'test'"
+
+  # An untracked file that fails lint in the checkout does not reach the check.
+  cat >"$CHECK_DIR/dirty.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-dirty" },
+  "targets": { "local": {} },
+  "platforms": ["linux/amd64"],
+  "actions": { "lint": { "commands": ["test ! -e lint-fails"] } }
+}
+EOF
+  check_repo dirty "$CHECK_DIR/dirty.json"
+  : >"$CHECK_DIR/dirty/lint-fails"
+  if "$ROOT/bin/ci" gate --working-directory "$CHECK_DIR/dirty" $gate >"$CHECK_DIR/dirty-gate.out" 2>&1; then
+    fail "the dirty file must fail lint in the checkout"
+  fi
+  run_check dirty HEAD $gate
+  test "$CHECK_CODE" -eq 0 || fail "an uncommitted file must not change the verdict: $(cat "$CHECK_DIR/dirty.out")"
+  check_paths dirty
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_no_worktree dirty
+
+  run_check pass 0123456789abcdef0123456789abcdef01234567 $gate
+  test "$CHECK_CODE" -ne 0 || fail "check of an unknown commit must fail"
+  assert_contains "$CHECK_DIR/pass.out" "check: not a commit: 0123456789abcdef0123456789abcdef01234567"
+  test ! -e "$CHECK_DIR/pass/.git/ci-cd/checks/0123456789abcdef0123456789abcdef01234567.json" ||
+    fail "an unknown commit must leave no record"
+  assert_no_worktree pass
+
+  check_repo missing-tool "$ROOT/tests/fixtures/missing-tool/.ci-cd.json"
+  run_check missing-tool HEAD
+  assert_check_fails missing-tool '["test"]'
+  assert_contains "$LOG" "requires missing tool"
+
+  printf '{ "version": 1,\n' >"$CHECK_DIR/malformed.json"
+  check_repo malformed "$CHECK_DIR/malformed.json"
+  run_check malformed HEAD $gate
+  assert_check_fails malformed '[]'
+  assert_contains "$LOG" "Malformed JSON"
+
+  printf '{ "version": 2, "project": { "name": "check-invalid" }, "actions": {} }\n' >"$CHECK_DIR/invalid.json"
+  check_repo invalid "$CHECK_DIR/invalid.json"
+  run_check invalid HEAD
+  assert_check_fails invalid '[]'
+  assert_contains "$LOG" "Config validation failed"
+
+  cat >"$CHECK_DIR/crash.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-crash" },
+  "actions": { "test": { "commands": ["kill -KILL $$"] } }
+}
+EOF
+  check_repo crash "$CHECK_DIR/crash.json"
+  run_check crash HEAD
+  assert_check_fails crash '["test"]'
+) || exit 1
+
 printf 'test: no-TTY pnpm purge-confirm default\n'
 # Headless (the test runner has no TTY): the runner injects pnpm_config_ci=true
 # so pnpm rebuilds node_modules without a TTY prompt in the pre-push gate. The
@@ -469,13 +606,6 @@ assert_contains /tmp/ci-cd-vulns-bad-config.out "vulns.fail_on must be one of"
 printf 'test: vulns --json writes a result for every outcome\n'
 JSON_DIR="$TMP_ROOT/vulns-json"
 mkdir -p "$JSON_DIR"
-# Passes when the JS expression holds for the parsed result `r`.
-assert_json() {
-  node -e '
-    const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-    if (!eval(process.argv[2])) process.exit(1);
-  ' "$1" "$2" || fail "expected $1 to satisfy: $2"
-}
 # Runs a vulns case without and with --json, each on its own copy of the
 # cache, and checks stdout, stderr and the exit code are the same. Extra env
 # goes after the case name as NAME=value words.
