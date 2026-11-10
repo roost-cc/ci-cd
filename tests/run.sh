@@ -513,6 +513,26 @@ EOF
   assert_contains "$LOG" "step-done"
   assert_json "$RECORD" "r.verdict === 'pass'"
   assert_no_worktree background
+
+  # a check that leaves a read-only directory still writes its record
+  cat >"$CHECK_DIR/readonly.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "check-readonly" },
+  "actions": { "test": { "commands": ["mkdir -p ro/sub && touch ro/sub/f && chmod 555 ro/sub"] } }
+}
+EOF
+  check_repo readonly "$CHECK_DIR/readonly.json"
+  run_check readonly HEAD
+  # The worktree cannot be removed; make it writable again, then remove it.
+  chmod -R u+w "$CHECK_TMP"
+  rm -rf "${CHECK_TMP:?}"/*
+  git -C "$CHECK_DIR/readonly" worktree prune
+  test "$CHECK_CODE" -eq 0 || fail "a passing check must exit 0 when its worktree cannot be removed: $(cat "$CHECK_DIR/readonly.out")"
+  check_paths readonly
+  assert_json "$RECORD" "r.verdict === 'pass'"
+  assert_contains "$CHECK_DIR/readonly.out" "ci-cd: warning: could not remove the check worktree"
+  assert_no_worktree readonly
 ) || exit 1
 
 printf 'test: gate reads .ci-cd.json promotion\n'
