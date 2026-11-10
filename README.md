@@ -122,6 +122,8 @@ The v1 schema lives at `schema/ci-cd.schema.json`. It supports:
 - `vulns`: optional; opts `bin/ci gate` into the lockfile vulnerability scan.
   `vulns.fail_on` (`critical`, `high`, `medium` or `low`; default `high`)
   sets the threshold. See [Vulnerability Scan](#vulnerability-scan).
+- `promotion`: optional; `pre-push-gate` or `check-record`. See
+  [Promotion](#promotion-the-gate-or-the-check-record).
 
 Action precedence is:
 
@@ -242,6 +244,29 @@ Linked worktrees of a clone share its git common directory, so a check run
 from one worktree is found from every other. A check can take minutes: start
 it in another terminal, do other work, and read the record and the log when it
 is done.
+
+### Promotion: the gate or the check record
+
+The `.ci-cd.json` key `promotion` says how a commit reaches `main`, and so
+what `gate` does in the pre-push hook. The hook entry is the same in every
+repo.
+
+- `"pre-push-gate"`: `gate` runs the full gate, as it always did.
+- `"check-record"`: a push to `refs/heads/main` passes only when the check
+  record of the pushed commit (`PRE_COMMIT_TO_REF`) has that `commit` and the
+  verdict `pass`. Otherwise `gate` refuses the push and prints
+  `ci check <commit>`: run it, then push again. A missing or unparsable
+  record, a `fail` record, a record of another commit and an unset
+  `PRE_COMMIT_TO_REF` each refuse. Every git command of the lookup has a
+  10-second timeout, and a timeout refuses. A push to any other branch runs no
+  check. Without `PRE_COMMIT_REMOTE_BRANCH`, `gate` was not started by a push
+  (a person, or `pre-commit run --hook-stage pre-push --all-files`), so it
+  runs the full gate.
+- No key: the full gate runs, and `gate` prints the warning
+  `ci-cd: .ci-cd.json sets no "promotion"; the full gate runs in the hook (E70 R11)`.
+
+pre-commit gives a pre-push hook only the first ref of a push, so a push of
+several refs at once can carry a commit to `main` past the check.
 
 ## Vulnerability Scan
 

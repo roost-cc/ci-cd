@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "project": {
+    "name": "gate-promotion-pre-push"
+  },
+  "promotion": "pre-push-gate",
+  "targets": {
+    "local": {}
+  },
+  "platforms": ["linux/amd64"],
+  "actions": {
+    "test": {
+      "commands": ["echo gate-ran-test"]
+    }
+  }
+}

@@ -455,6 +455,112 @@ EOF
   assert_check_fails crash '["test"]'
 ) || exit 1
 
+printf 'test: gate reads .ci-cd.json promotion\n'
+(
+  # This suite may itself run in a pre-push hook, which sets these.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE PRE_COMMIT_REMOTE_BRANCH PRE_COMMIT_TO_REF
+  PROMO_DIR="$TMP_ROOT/promotion"
+  mkdir -p "$PROMO_DIR"
+  gate='--target local --platform linux/amd64'
+  warning='ci-cd: .ci-cd.json sets no "promotion"; the full gate runs in the hook (E70 R11)'
+
+  printf '{ "version": 1, "project": { "name": "bad-promotion" }, "promotion": "x", "actions": {} }\n' \
+    >"$PROMO_DIR/bad.json"
+  if "$ROOT/bin/ci" validate --config "$PROMO_DIR/bad.json" >"$PROMO_DIR/bad.out" 2>&1; then
+    fail "validate must refuse an unknown promotion"
+  fi
+  assert_contains "$PROMO_DIR/bad.out" "promotion must be one of pre-push-gate, check-record; got 'x'."
+  run_ci gate-promotion-check-record validate $gate
+  run_ci gate-promotion-pre-push validate $gate
+
+  run_ci gate-test-only gate $gate >"$PROMO_DIR/absent.out"
+  assert_contains "$PROMO_DIR/absent.out" "$warning"
+  assert_contains "$PROMO_DIR/absent.out" "gate-ran-test"
+  # The key absent on a push to main is still today's gate.
+  env PRE_COMMIT_REMOTE_BRANCH=refs/heads/main PRE_COMMIT_TO_REF=0123456789abcdef0123456789abcdef01234567 \
+    "$ROOT/bin/ci" gate --working-directory "$ROOT/tests/fixtures/gate-test-only" $gate >"$PROMO_DIR/absent-main.out"
+  assert_contains "$PROMO_DIR/absent-main.out" "gate-ran-test"
+
+  run_ci gate-promotion-pre-push gate $gate >"$PROMO_DIR/pre-push.out"
+  assert_contains "$PROMO_DIR/pre-push.out" "gate-ran-test"
+  assert_not_contains 'sets no "promotion"' "$PROMO_DIR/pre-push.out"
+
+  # Not started by a push: the full gate.
+  run_ci gate-promotion-check-record gate $gate >"$PROMO_DIR/unpushed.out"
+  assert_contains "$PROMO_DIR/unpushed.out" "gate-ran-lint"
+  assert_contains "$PROMO_DIR/unpushed.out" "gate-ran-test"
+  assert_not_contains 'sets no "promotion"' "$PROMO_DIR/unpushed.out"
+
+  env PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature PRE_COMMIT_TO_REF=0123456789abcdef0123456789abcdef01234567 \
+    "$ROOT/bin/ci" gate --working-directory "$ROOT/tests/fixtures/gate-promotion-check-record" $gate \
+    >"$PROMO_DIR/branch.out" 2>&1 || fail "a branch push must pass: $(cat "$PROMO_DIR/branch.out")"
+  assert_contains "$PROMO_DIR/branch.out" "a push to refs/heads/feature is not a promotion; no check runs"
+  assert_not_contains 'gate-ran-|action=' "$PROMO_DIR/branch.out"
+
+  # A push to main reads the check record of the pushed commit.
+  REPO="$PROMO_DIR/repo"
+  git init -q -b main "$REPO"
+  cp "$ROOT/tests/fixtures/gate-promotion-check-record/.ci-cd.json" "$REPO/.ci-cd.json"
+  git -C "$REPO" add .ci-cd.json
+  git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm init
+  head=$(git -C "$REPO" rev-parse HEAD)
+  RECORD="$REPO/.git/ci-cd/checks/$head.json"
+  # Runs the gate as a push of $1 to main, with the env assignments $2...; sets
+  # GATE_CODE, output in $PROMO_DIR/main.out.
+  push_main() {
+    to_ref=$1
+    shift
+    set +e
+    env PRE_COMMIT_REMOTE_BRANCH=refs/heads/main ${to_ref:+PRE_COMMIT_TO_REF=$to_ref} "$@" \
+      "$ROOT/bin/ci" gate --working-directory "$REPO" $gate >|"$PROMO_DIR/main.out" 2>&1
+    GATE_CODE=$?
+    set -e
+  }
+  # The push of $1 is refused for the reason $2 and prints `ci check $3`.
+  assert_refused() {
+    test "$GATE_CODE" -ne 0 || fail "$2: the push must be refused: $(cat "$PROMO_DIR/main.out")"
+    assert_contains "$PROMO_DIR/main.out" "$2"
+    assert_contains "$PROMO_DIR/main.out" "ci check $3"
+    assert_not_contains 'gate-ran-' "$PROMO_DIR/main.out"
+  }
+
+  push_main ''
+  assert_refused '' "PRE_COMMIT_TO_REF is not a commit ID" '<commit>'
+  push_main "$head"
+  assert_refused "$head" "no readable check record for $head" "$head"
+
+  TMPDIR="$PROMO_DIR" "$ROOT/bin/ci" check HEAD --working-directory "$REPO" $gate >"$PROMO_DIR/check.out" 2>&1 ||
+    fail "check must pass: $(cat "$PROMO_DIR/check.out")"
+  push_main "$head"
+  test "$GATE_CODE" -eq 0 || fail "a passing record must pass the push: $(cat "$PROMO_DIR/main.out")"
+  assert_contains "$PROMO_DIR/main.out" "check record for $head: pass"
+  assert_not_contains 'gate-ran-' "$PROMO_DIR/main.out"
+
+  # The record lookup's git has a 10-second timeout; a timeout refuses.
+  mkdir -p "$PROMO_DIR/slow-git"
+  printf '#!/bin/sh\nexec sleep 30\n' >"$PROMO_DIR/slow-git/git"
+  chmod +x "$PROMO_DIR/slow-git/git"
+  started=$(date +%s)
+  push_main "$head" PATH="$PROMO_DIR/slow-git:$PATH"
+  elapsed=$(($(date +%s) - started))
+  assert_refused "$head" "git cannot name the git common directory" "$head"
+  test "$elapsed" -lt 20 || fail "the git timeout must refuse in about 10 seconds, took ${elapsed}s"
+
+  sed 's/"verdict": "pass"/"verdict": "fail"/' "$RECORD" >"$PROMO_DIR/fail.json"
+  cp "$PROMO_DIR/fail.json" "$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the check of $head did not pass (fail)" "$head"
+
+  other=0123456789abcdef0123456789abcdef01234567
+  printf '{ "commit": "%s", "verdict": "pass" }\n' "$other" >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the check record is not for $head" "$head"
+
+  printf 'not json\n' >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "no readable check record for $head" "$head"
+) || exit 1
+
 printf 'test: no-TTY pnpm purge-confirm default\n'
 # Headless (the test runner has no TTY): the runner injects pnpm_config_ci=true
 # so pnpm rebuilds node_modules without a TTY prompt in the pre-push gate. The
