@@ -17,6 +17,10 @@ ARTIFACTS_DIR="$TMP_ROOT/artifacts"
 mkdir -p "$ARTIFACTS_DIR"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# This clone's own records: the suite must add none (see the end).
+OWN_CHECKS="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/ci-cd/checks"
+OWN_CHECKS_BEFORE=$(ls -A "$OWN_CHECKS" 2>/dev/null || true)
+
 run_ci() {
   fixture=$1
   shift
@@ -233,6 +237,8 @@ if run_ci gate-failing gate --target local --platform linux/amd64 >/tmp/ci-cd-ga
 fi
 assert_contains /tmp/ci-cd-gate-failing.out "gate-ran-lint"
 assert_contains /tmp/ci-cd-gate-failing.out "gate failed on 'test'"
+# The fixture is not a git checkout (GIT_CEILING_DIRECTORIES), so the gate has no place for a record.
+assert_contains /tmp/ci-cd-gate-failing.out "ci-cd: gate wrote no record: "
 
 printf 'test: gate steps run without the hook GIT_DIR (linked-worktree push)\n'
 (
@@ -391,6 +397,7 @@ printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
   assert_json "$RECORD" "r.commit === '$head' && /^[0-9a-f]{40}$/.test(r.commit) && r.tree === '$tree'"
   assert_json "$RECORD" "r.verdict === 'pass' && JSON.stringify(r.steps) === '[\"lint\",\"test\"]'"
   assert_json "$RECORD" "r.started === new Date(r.started).toISOString() && r.finished >= r.started"
+  assert_json "$RECORD" "r.by === 'check' && r.exit_code === null && r.error === null && r.vulns === null"
   assert_contains "$LOG" "gate-ran-lint"
   assert_contains "$LOG" "gate-ran-test"
   assert_contains "$LOG" "gate passed"
@@ -409,8 +416,21 @@ printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
   check_repo failing "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
   run_check failing HEAD $gate
   assert_check_fails failing '["lint","test"]'
+  assert_json "$RECORD" "r.by === 'check' && typeof r.exit_code === 'number' && r.exit_code !== 0 && r.error === null"
   assert_contains "$LOG" "gate-ran-lint"
   assert_contains "$LOG" "gate failed on 'test'"
+
+  # A check of a commit that declares vulns carries the scan's report.
+  check_repo vulns "$ROOT/tests/fixtures/gate-vulns-failing/.ci-cd.json"
+  cp "$ROOT/tests/fixtures/gate-vulns-failing/osv-output.json" "$CHECK_DIR/vulns/"
+  git -C "$CHECK_DIR/vulns" add osv-output.json
+  git -C "$CHECK_DIR/vulns" -c user.name=t -c user.email=t@t commit -qm findings
+  (
+    export PATH="$ROOT/tests/fixtures/osv-tools/bin:$PATH" XDG_CACHE_HOME="$CHECK_DIR/cache"
+    run_check vulns HEAD $gate
+    assert_check_fails vulns '["vulns"]'
+    assert_json "$RECORD" "r.exit_code === 1 && r.error === null && r.vulns.schema === 'ci-cd-vulns/v1' && r.vulns.findings.some((f) => f.blocking)"
+  ) || exit 1
 
   # An untracked file that fails lint in the checkout does not reach the check.
   cat >"$CHECK_DIR/dirty.json" <<'EOF'
@@ -449,6 +469,7 @@ EOF
   check_repo malformed "$CHECK_DIR/malformed.json"
   run_check malformed HEAD $gate
   assert_check_fails malformed '[]'
+  assert_json "$RECORD" "/Malformed JSON/.test(r.error) && r.exit_code === 1"
   assert_contains "$LOG" "Malformed JSON"
 
   printf '{ "version": 2, "project": { "name": "check-invalid" }, "actions": {} }\n' >"$CHECK_DIR/invalid.json"
@@ -467,6 +488,7 @@ EOF
   check_repo crash "$CHECK_DIR/crash.json"
   run_check crash HEAD
   assert_check_fails crash '["test"]'
+  assert_json "$RECORD" "r.exit_code === 1 && r.error === null"
 
   # an interrupted check stops its step, removes the worktree and writes no record
   cat >"$CHECK_DIR/slow.json" <<'EOF'
@@ -540,6 +562,161 @@ EOF
   assert_no_worktree readonly
 ) || exit 1
 
+printf 'test: gate leaves a record when it fails\n'
+(
+  GATE_DIR="$TMP_ROOT/gate-record"
+  mkdir -p "$GATE_DIR/cache/ci-cd/osv"
+  # A fresh stamp, so the gate's scan and `ci vulns` both run --offline.
+  touch "$GATE_DIR/cache/ci-cd/osv/last-download"
+  OSV_BIN="$ROOT/tests/fixtures/osv-tools/bin"
+  # Makes the repo $1 with $2 as its committed .ci-cd.json and the files $3...
+  # beside it; RECORD and LOG are the record and log paths of its HEAD.
+  gate_repo() {
+    repo="$GATE_DIR/$1"
+    config=$2
+    shift 2
+    git init -q -b main "$repo"
+    cp "$config" "$repo/.ci-cd.json"
+    for file in "$@"; do cp "$file" "$repo/"; done
+    git -C "$repo" add -A
+    git -C "$repo" -c user.name=t -c user.email=t@t commit -qm init
+    head=$(git -C "$repo" rev-parse HEAD)
+    CHECKS="$repo/.git/ci-cd/checks"
+    RECORD="$CHECKS/$head.json"
+    LOG="$CHECKS/$head.log"
+  }
+  # Runs `ci gate` in the repo $1 with the env assignments $2...; sets
+  # GATE_CODE, output in $1.out.
+  run_gate() {
+    repo=$1
+    shift
+    set +e
+    env XDG_CACHE_HOME="$GATE_DIR/cache" "$@" "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/$repo" \
+      >|"$GATE_DIR/$repo.out" 2>&1
+    GATE_CODE=$?
+    set -e
+  }
+  assert_no_tmp() {
+    if ls -A "$CHECKS" | grep -q '\.tmp$'; then
+      fail "a temporary file was left in $CHECKS: $(ls -A "$CHECKS")"
+    fi
+  }
+
+  # A failing action: the record names it last, with its exit code.
+  gate_repo failing "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  run_gate failing
+  test "$GATE_CODE" -ne 0 || fail "a failing gate must exit non-zero"
+  assert_json "$RECORD" "r.by === 'gate' && r.verdict === 'fail' && r.commit === '$head' && /^[0-9a-f]{40}$/.test(r.tree)"
+  assert_json "$RECORD" "JSON.stringify(r.steps) === '[\"lint\",\"test\"]' && typeof r.exit_code === 'number' && r.exit_code === $GATE_CODE"
+  assert_json "$RECORD" "r.error === null && r.vulns === null && r.started === new Date(r.started).toISOString() && r.finished >= r.started"
+  assert_contains "$LOG" "gate failed on 'test'"
+  assert_contains "$LOG" "gate-ran-lint"
+  assert_contains "$GATE_DIR/failing.out" "ci-cd: gate fail: "
+  assert_no_tmp
+
+  # A passing gate writes nothing.
+  gate_repo passing "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json"
+  run_gate passing
+  test "$GATE_CODE" -eq 0 || fail "a passing gate must exit 0: $(cat "$GATE_DIR/passing.out")"
+  test -z "$(ls -A "$CHECKS")" || fail "a passing gate must write nothing: $(ls -A "$CHECKS")"
+
+  # A push names the pushed commit, not HEAD.
+  gate_repo pushed "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  pushed=$head
+  git -C "$GATE_DIR/pushed" -c user.name=t -c user.email=t@t commit -q --allow-empty -m second
+  run_gate pushed PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature PRE_COMMIT_TO_REF="$pushed"
+  test "$GATE_CODE" -ne 0 || fail "the pushed commit's gate must fail"
+  assert_json "$RECORD" "r.by === 'gate' && r.commit === '$pushed'"
+  test ! -e "$CHECKS/$(git -C "$GATE_DIR/pushed" rev-parse HEAD).json" || fail "the record must be the pushed commit's, not HEAD's"
+  # A push without PRE_COMMIT_TO_REF names no commit, so there is no record.
+  rm "$RECORD" "$LOG"
+  run_gate pushed PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature
+  test "$GATE_CODE" -ne 0 || fail "the gate must still run and fail"
+  assert_contains "$GATE_DIR/pushed.out" "ci-cd: gate wrote no record: "
+  test -z "$(ls -A "$CHECKS")" || fail "a gate without a commit must write nothing: $(ls -A "$CHECKS")"
+
+  # ci-cd threw: `error` holds the message.
+  gate_repo missing-tool "$ROOT/tests/fixtures/missing-tool/.ci-cd.json"
+  run_gate missing-tool
+  test "$GATE_CODE" -eq 1 || fail "a missing tool must exit 1, got $GATE_CODE"
+  assert_json "$RECORD" "r.by === 'gate' && r.verdict === 'fail' && /requires missing tool/.test(r.error) && r.exit_code === 1 && r.vulns === null"
+
+  # The vulns step: the record carries the scan's report, as `ci vulns --json` writes it.
+  gate_repo vulns "$ROOT/tests/fixtures/gate-vulns-failing/.ci-cd.json" \
+    "$ROOT/tests/fixtures/gate-vulns-failing/osv-output.json"
+  run_gate vulns PATH="$OSV_BIN:$PATH"
+  test "$GATE_CODE" -eq 1 || fail "a blocking finding must exit 1, got $GATE_CODE"
+  assert_json "$RECORD" "r.steps[r.steps.length - 1] === 'vulns' && r.exit_code === 1 && r.error === null"
+  assert_json "$RECORD" "r.vulns.schema === 'ci-cd-vulns/v1' && r.vulns.findings.some((f) => f.blocking === true && f.status === 'new')"
+  env PATH="$OSV_BIN:$PATH" XDG_CACHE_HOME="$GATE_DIR/cache" "$ROOT/bin/ci" vulns \
+    --working-directory "$GATE_DIR/vulns" --json "$GATE_DIR/vulns.json" >/dev/null 2>&1 || true
+  node -e '
+    const read = (path) => JSON.parse(require("node:fs").readFileSync(path, "utf8"));
+    const fromGate = read(process.argv[1]).vulns;
+    const fromVulns = read(process.argv[2]);
+    delete fromGate.scanned_at;
+    delete fromVulns.scanned_at;
+    if (JSON.stringify(fromGate) !== JSON.stringify(fromVulns)) process.exit(1);
+  ' "$RECORD" "$GATE_DIR/vulns.json" || fail "the gate's vulns report must be the one ci vulns --json writes"
+  # Without osv-scanner the step throws: `error` is set, and so is the report's.
+  run_gate vulns PATH=/usr/bin:/bin
+  test "$GATE_CODE" -eq 1 || fail "a missing osv-scanner must exit 1, got $GATE_CODE"
+  assert_json "$RECORD" "r.error.includes('osv-scanner is not on PATH') && r.exit_code === 1"
+  assert_json "$RECORD" "r.vulns.status === 'error' && r.vulns.error === r.error"
+
+  # A record that ci check wrote stays, with its log; a gate record and a file
+  # that is not JSON are replaced.
+  gate_repo stays "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  mkdir -p "$CHECKS"
+  for record in \
+    "{ \"commit\": \"$head\", \"by\": \"check\", \"verdict\": \"fail\" }" \
+    "{ \"commit\": \"$head\", \"verdict\": \"pass\" }"; do
+    printf '%s\n' "$record" >|"$RECORD"
+    printf 'the check log\n' >|"$LOG"
+    run_gate stays
+    test "$GATE_CODE" -ne 0 || fail "the gate must still fail"
+    test "$(cat "$RECORD")" = "$record" || fail "the gate replaced a check record: $(cat "$RECORD")"
+    test "$(cat "$LOG")" = 'the check log' || fail "the gate replaced the check record's log"
+    assert_contains "$GATE_DIR/stays.out" "ci-cd: gate failed; the check record of $head stays (ci check wrote it): "
+    assert_no_tmp
+  done
+  printf '{ "commit": "%s", "by": "gate", "verdict": "fail", "old": true }\n' "$head" >|"$RECORD"
+  run_gate stays
+  assert_json "$RECORD" "r.by === 'gate' && !('old' in r) && r.steps.length === 2"
+  printf 'not json\n' >|"$RECORD"
+  run_gate stays
+  assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 2"
+  assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
+
+  # An interrupted gate stops its step and writes no record.
+  cat >"$GATE_DIR/slow.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "gate-slow" },
+  "actions": { "test": { "commands": ["echo step-started; sleep 30.4343"] } }
+}
+EOF
+  gate_repo slow "$GATE_DIR/slow.json"
+  "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/slow" >"$GATE_DIR/slow.out" 2>&1 &
+  gate_pid=$!
+  tries=0
+  until grep -q step-started "$GATE_DIR/slow.out"; do
+    tries=$((tries + 1))
+    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$GATE_DIR/slow.out")"
+    sleep 0.1
+  done
+  kill -TERM "$gate_pid"
+  set +e
+  wait "$gate_pid"
+  slow_code=$?
+  set -e
+  test "$slow_code" -eq 143 || fail "an interrupted gate must exit 143, got $slow_code: $(cat "$GATE_DIR/slow.out")"
+  if pgrep -f '^sleep 30[.]4343$' >/dev/null; then
+    fail "the interrupted gate left its step running: $(pgrep -af '^sleep 30[.]4343$')"
+  fi
+  test -z "$(ls -A "$CHECKS")" || fail "an interrupted gate must write nothing: $(ls -A "$CHECKS")"
+) || exit 1
+
 printf 'test: gate reads .ci-cd.json promotion\n'
 (
   PROMO_DIR="$TMP_ROOT/promotion"
@@ -609,8 +786,12 @@ printf 'test: gate reads .ci-cd.json promotion\n'
 
   push_main ''
   assert_refused '' "PRE_COMMIT_TO_REF is not a commit ID" '<commit>'
+  assert_contains "$PROMO_DIR/main.out" "ci-cd: gate wrote no record: "
   push_main "$head"
   assert_refused "$head" "no readable check record for $head" "$head"
+  # The refusal is recorded (decision A), and its error names `ci check`.
+  assert_json "$RECORD" "r.by === 'gate' && r.verdict === 'fail' && r.commit === '$head' && r.steps.length === 0"
+  assert_json "$RECORD" "r.exit_code === 1 && r.vulns === null && r.error.startsWith('push to main refused: no readable check record for $head') && r.error.includes('run \`ci check $head\`, then push again')"
 
   TMPDIR="$PROMO_DIR" "$ROOT/bin/ci" check HEAD --working-directory "$REPO" $gate >"$PROMO_DIR/check.out" 2>&1 ||
     fail "check must pass: $(cat "$PROMO_DIR/check.out")"
@@ -628,20 +809,32 @@ printf 'test: gate reads .ci-cd.json promotion\n'
   elapsed=$(($(date +%s) - started))
   assert_refused "$head" "git cannot name the git common directory" "$head"
   test "$elapsed" -lt 20 || fail "the git timeout must refuse in about 10 seconds, took ${elapsed}s"
+  assert_contains "$PROMO_DIR/main.out" "ci-cd: gate wrote no record: "
+  assert_json "$RECORD" "r.by === 'check' && r.verdict === 'pass'"
 
+  # A check record the gate refuses stays as it is.
   sed 's/"verdict": "pass"/"verdict": "fail"/' "$RECORD" >"$PROMO_DIR/fail.json"
   cp "$PROMO_DIR/fail.json" "$RECORD"
   push_main "$head"
   assert_refused "$head" "the check of $head did not pass (fail)" "$head"
+  cmp -s "$PROMO_DIR/fail.json" "$RECORD" || fail "the gate replaced a fail check record"
 
   other=0123456789abcdef0123456789abcdef01234567
-  printf '{ "commit": "%s", "verdict": "pass" }\n' "$other" >|"$RECORD"
+  printf '{ "commit": "%s", "verdict": "pass" }\n' "$other" >"$PROMO_DIR/other.json"
+  cp "$PROMO_DIR/other.json" "$RECORD"
   push_main "$head"
   assert_refused "$head" "the check record is not for $head" "$head"
+  cmp -s "$PROMO_DIR/other.json" "$RECORD" || fail "the gate replaced a record without by"
+
+  # Only a record that ci check wrote promotes.
+  printf '{ "commit": "%s", "by": "gate", "verdict": "pass" }\n' "$head" >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the record of $head was written by ci gate, not ci check" "$head"
 
   printf 'not json\n' >|"$RECORD"
   push_main "$head"
   assert_refused "$head" "no readable check record for $head" "$head"
+  assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 0 && r.exit_code === 1"
 ) || exit 1
 
 printf 'test: no-TTY pnpm purge-confirm default\n'
@@ -1621,5 +1814,9 @@ assert_contains "$ROOT/README.md" "v1.0.0"
 assert_contains "$ROOT/README.md" "commit SHA"
 assert_contains "$ROOT/examples/runners/github-actions/ci.yml" "--branch v1"
 assert_contains "$ROOT/examples/runners/gitlab-ci.yml" "--branch v1"
+
+printf 'test: the suite leaves no record in this clone\n'
+test "$(ls -A "$OWN_CHECKS" 2>/dev/null || true)" = "$OWN_CHECKS_BEFORE" ||
+  fail "the suite added a file under $OWN_CHECKS: $(ls -A "$OWN_CHECKS")"
 
 printf 'ok\n'
