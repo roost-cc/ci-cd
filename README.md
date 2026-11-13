@@ -181,6 +181,30 @@ gate then runs `vulns` (see [Vulnerability Scan](#vulnerability-scan)). This is
 what the shared pre-push hook invokes, so no action name is hardcoded in the
 scaffold.
 
+A `gate` that fails leaves a record of the run, so the process that ran
+`git push` can read why without parsing the hook's output. It writes the record
+and the log where `check` does (see [Checking One Commit](#checking-one-commit)),
+with `"by": "gate"`, for the pushed commit (`PRE_COMMIT_TO_REF`) when a push
+runs it (`PRE_COMMIT_REMOTE_BRANCH` is set), else for `HEAD`. A refused push to
+`main` is a failure too (see [Promotion](#promotion-the-gate-or-the-check-record)).
+A reader takes a record as its push's only when its `started` is not before
+the push began: the hook can fail before `gate` writes. `gate` writes nothing:
+
+- when it passes, or is interrupted;
+- over a record that `check` wrote (`by` is `check`, or absent). It then
+  prints `ci-cd: gate failed; the check record of <commit> stays (ci check wrote it): <path>`;
+- when git cannot name the commit or the git common directory (not a git
+  checkout, `PRE_COMMIT_TO_REF` unset or unknown, a git timeout). It then
+  prints `ci-cd: gate wrote no record: <git's message>`;
+- when the record cannot be written (for example a read-only `.git`). It then
+  prints `ci-cd: gate wrote no record: <the error>`, and exits with the gate's
+  own exit code.
+
+It replaces an older `gate` record of the commit, and a file there that is not
+a JSON object. In a git checkout, its steps run as `check`'s do: in their own process
+group, with their output piped through `gate` into the log and no stdin. A tool
+that colours its output only for a terminal then prints no colour.
+
 `check <commit>` runs the same steps as `gate` on exactly one commit. See
 [Checking One Commit](#checking-one-commit).
 
@@ -221,18 +245,36 @@ example `.git/ci-cd/checks/<commit>.json` in an ordinary clone:
 {
   "commit": "<40 hex>",
   "tree": "<40 hex>",
-  "verdict": "pass",
+  "by": "check",
+  "verdict": "fail",
   "steps": ["lint", "test"],
   "started": "2026-11-10T09:00:00.000Z",
-  "finished": "2026-11-10T09:07:00.000Z"
+  "finished": "2026-11-10T09:07:00.000Z",
+  "exit_code": 1,
+  "error": null,
+  "vulns": null
 }
 ```
 
+- `by` names the command that wrote the record: `check`, or `gate` (see
+  [Commands](#commands)). A record from before `by` has none, and counts as
+  `check`.
 - `verdict` is `pass` or `fail`. A failed check also writes a record, with
   `fail`.
 - `steps` names the steps that started, in order. A check that stops at
   `test` lists `test` last.
-- `<commit>.log`, beside the record, holds everything the check printed.
+- `exit_code` is `null` on a pass, else the exit code of the run: the failed
+  step's, or the one ci-cd exits with when it threw.
+- `error` is the message of the error that stopped the run when ci-cd threw
+  one (an invalid `.ci-cd.json`, a missing tool, a missing `osv-scanner`), else
+  `null`. A step that exits non-zero leaves it `null`. When `error` is set,
+  `steps` may be empty.
+- `vulns` is the `ci-cd-vulns/v1` report of the `vulns` step when it ran (see
+  [Vulnerability Scan](#vulnerability-scan)), else `null`. When that step
+  threw, the report has `status: "error"`.
+- `<commit>.log`, beside the record, holds everything the check printed, up
+  to 64 MiB. A longer log keeps its first 64 MiB and ends with the line
+  `ci-cd: log truncated at 64 MiB`.
 - A check that cannot run fails closed: an invalid or malformed
   `.ci-cd.json`, a missing tool and a step that crashes each exit non-zero
   and write a `fail` record. An unknown commit exits non-zero and writes no
@@ -253,11 +295,14 @@ repo.
 
 - `"pre-push-gate"`: `gate` runs the full gate, as it always did.
 - `"check-record"`: a push to `refs/heads/main` passes only when the check
-  record of the pushed commit (`PRE_COMMIT_TO_REF`) has that `commit` and the
-  verdict `pass`. Otherwise `gate` refuses the push and prints
-  `ci check <commit>`: run it, then push again. A missing or unparsable
-  record, a `fail` record, a record of another commit and an unset
-  `PRE_COMMIT_TO_REF` each refuse. Every git command of the lookup has a
+  record of the pushed commit (`PRE_COMMIT_TO_REF`) has that `commit`, the
+  verdict `pass`, and a `by` that is `check` or absent: only a record that
+  `check` wrote promotes. Otherwise `gate` refuses the push with one line that
+  names `ci check <commit>`: run it, then push again. A missing or unparsable
+  record, a `fail` record, a record of another commit, a record that `gate`
+  wrote and an unset `PRE_COMMIT_TO_REF` each refuse. A refusal is a failed
+  gate, so `gate` records it: `steps` is empty, `exit_code` is 1 and `error`
+  is the refusal line. Every git command of the lookup has a
   10-second timeout, and a timeout refuses. A push to any other branch runs no
   check. Without `PRE_COMMIT_REMOTE_BRANCH`, `gate` was not started by a push
   (a person, or `pre-commit run --hook-stage pre-push --all-files`), so it
@@ -353,8 +398,11 @@ release binary from https://github.com/google/osv-scanner/releases.
 JSON result to `<path>` on **every** outcome, errors included; the text output
 and exit codes are unchanged. A relative path is resolved from the caller's
 current directory, not from `--working-directory`, and its parent directory
-must exist (otherwise `vulns` exits 1 before scanning). `bin/ci gate` never
-writes one.
+must exist (otherwise `vulns` exits 1 before scanning). `bin/ci gate` and
+`bin/ci check` carry the same result in their record's `vulns` (see
+[Checking One Commit](#checking-one-commit)). There, `fix_state` appears only on
+findings whose fix state can decide the gate (see
+[Fixing findings](#fixing-findings)).
 
 ```json
 {
