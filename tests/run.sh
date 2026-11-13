@@ -613,12 +613,27 @@ printf 'test: gate leaves a record when it fails\n'
   assert_contains "$LOG" "gate-ran-lint"
   assert_contains "$GATE_DIR/failing.out" "ci-cd: gate fail: "
   assert_no_tmp
+  FAIL_CODE=$GATE_CODE
 
-  # A passing gate writes nothing.
+  # A passing gate writes nothing, not even the checks directory.
   gate_repo passing "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json"
   run_gate passing
   test "$GATE_CODE" -eq 0 || fail "a passing gate must exit 0: $(cat "$GATE_DIR/passing.out")"
-  test -z "$(ls -A "$CHECKS")" || fail "a passing gate must write nothing: $(ls -A "$CHECKS")"
+  test ! -e "$CHECKS" || fail "a passing gate must write nothing: $(ls -A "$CHECKS")"
+
+  # gate still exits 0 when the checks directory cannot be made (a file holds
+  # the name .git/ci-cd), and a failing gate keeps its step's exit code.
+  : >"$GATE_DIR/passing/.git/ci-cd"
+  run_gate passing
+  test "$GATE_CODE" -eq 0 || fail "a passing gate must exit 0 without a checks directory: $(cat "$GATE_DIR/passing.out")"
+  assert_not_contains '^\s+at ' "$GATE_DIR/passing.out"
+  gate_repo nodir "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  : >"$GATE_DIR/nodir/.git/ci-cd"
+  run_gate nodir
+  test "$GATE_CODE" -eq "$FAIL_CODE" || fail "the gate must exit $FAIL_CODE, got $GATE_CODE: $(cat "$GATE_DIR/nodir.out")"
+  assert_contains "$GATE_DIR/nodir.out" "gate-ran-lint"
+  assert_contains "$GATE_DIR/nodir.out" "ci-cd: gate wrote no record: "
+  assert_not_contains '^\s+at ' "$GATE_DIR/nodir.out"
 
   # A push names the pushed commit, not HEAD.
   gate_repo pushed "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
@@ -687,13 +702,26 @@ printf 'test: gate leaves a record when it fails\n'
   run_gate stays
   assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 2"
   assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
-  # A record that cannot be written (a directory holds its name) leaves no temporary file.
-  rm "$RECORD"
-  mkdir "$RECORD"
-  run_gate stays
-  test "$GATE_CODE" -ne 0 || fail "the gate must still fail"
-  assert_no_tmp
-  rmdir "$RECORD"
+  # gate keeps the step's exit code when the record cannot be written (a
+  # read-only checks directory, a directory that holds the record's or the
+  # log's name), and leaves no temporary file.
+  rm "$RECORD" "$LOG"
+  for broken in readonly record log; do
+    case $broken in
+      readonly) chmod a-w "$CHECKS" ;;
+      record) mkdir "$RECORD" ;;
+      log) mkdir "$LOG" ;;
+    esac
+    run_gate stays
+    chmod u+w "$CHECKS"
+    test "$GATE_CODE" -eq "$FAIL_CODE" || fail "$broken: the gate must exit $FAIL_CODE, got $GATE_CODE: $(cat "$GATE_DIR/stays.out")"
+    assert_contains "$GATE_DIR/stays.out" "gate-ran-lint"
+    assert_contains "$GATE_DIR/stays.out" "ci-cd: gate wrote no record: "
+    assert_not_contains '^\s+at ' "$GATE_DIR/stays.out"
+    assert_no_tmp
+    test ! -f "$RECORD" || fail "$broken: a gate that says it wrote no record wrote one"
+    rm -rf "$RECORD" "$LOG"
+  done
 
   # An interrupted gate stops its step and writes no record.
   cat >"$GATE_DIR/slow.json" <<'EOF'
@@ -721,7 +749,7 @@ EOF
   if pgrep -f '^sleep 30[.]4343$' >/dev/null; then
     fail "the interrupted gate left its step running: $(pgrep -af '^sleep 30[.]4343$')"
   fi
-  test -z "$(ls -A "$CHECKS")" || fail "an interrupted gate must write nothing: $(ls -A "$CHECKS")"
+  test ! -e "$CHECKS" || fail "an interrupted gate must write nothing: $(ls -A "$CHECKS")"
 ) || exit 1
 
 printf 'test: gate reads .ci-cd.json promotion\n'

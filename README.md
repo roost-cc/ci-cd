@@ -195,7 +195,10 @@ the push began: the hook can fail before `gate` writes. `gate` writes nothing:
   prints `ci-cd: gate failed; the check record of <commit> stays (ci check wrote it): <path>`;
 - when git cannot name the commit or the git common directory (not a git
   checkout, `PRE_COMMIT_TO_REF` unset or unknown, a git timeout). It then
-  prints `ci-cd: gate wrote no record: <git's message>`.
+  prints `ci-cd: gate wrote no record: <git's message>`;
+- when the record cannot be written (for example a read-only `.git`). It then
+  prints `ci-cd: gate wrote no record: <the error>`, and exits with the gate's
+  own exit code.
 
 It replaces an older `gate` record of the commit, and a file there that is not
 JSON. In a git checkout, its steps run as `check`'s do: in their own process
