@@ -201,7 +201,7 @@ the push began: the hook can fail before `gate` writes. `gate` writes nothing:
   own exit code.
 
 It replaces an older `gate` record of the commit, and a file there that is not
-JSON. In a git checkout, its steps run as `check`'s do: in their own process
+a JSON object. In a git checkout, its steps run as `check`'s do: in their own process
 group, with their output piped through `gate` into the log and no stdin. A tool
 that colours its output only for a terminal then prints no colour.
 

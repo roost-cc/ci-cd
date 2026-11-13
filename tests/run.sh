@@ -680,7 +680,7 @@ printf 'test: gate leaves a record when it fails\n'
   assert_json "$RECORD" "r.vulns.status === 'error' && r.vulns.error === r.error"
 
   # A record that ci check wrote stays, with its log; a gate record and a file
-  # that is not JSON are replaced.
+  # that is not a JSON object are replaced.
   gate_repo stays "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
   mkdir -p "$CHECKS"
   for record in \
@@ -698,10 +698,13 @@ printf 'test: gate leaves a record when it fails\n'
   printf '{ "commit": "%s", "by": "gate", "verdict": "fail", "old": true }\n' "$head" >|"$RECORD"
   run_gate stays
   assert_json "$RECORD" "r.by === 'gate' && !('old' in r) && r.steps.length === 2"
-  printf 'not json\n' >|"$RECORD"
-  run_gate stays
-  assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 2"
-  assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
+  # gate replaces a record file that is not a JSON object.
+  for stored in 'not json' '' 'null' '[]' '"x"' '1'; do
+    printf '%s\n' "$stored" >|"$RECORD"
+    run_gate stays
+    assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 2"
+    assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
+  done
   # gate keeps the step's exit code when the record cannot be written (a
   # read-only checks directory, a directory that holds the record's or the
   # log's name), and leaves no temporary file.
@@ -869,6 +872,12 @@ printf 'test: gate reads .ci-cd.json promotion\n'
   printf 'not json\n' >|"$RECORD"
   push_main "$head"
   assert_refused "$head" "no readable check record for $head" "$head"
+  assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 0 && r.exit_code === 1"
+
+  # JSON that is not an object: promotion refuses it, and the gate replaces it.
+  printf 'null\n' >|"$RECORD"
+  push_main "$head"
+  assert_refused "$head" "the check record is not for $head" "$head"
   assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 0 && r.exit_code === 1"
 ) || exit 1
 
