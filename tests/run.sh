@@ -753,6 +753,25 @@ EOF
     fail "the interrupted gate left its step running: $(pgrep -af '^sleep 30[.]4343$')"
   fi
   test ! -e "$CHECKS" || fail "an interrupted gate must write nothing: $(ls -A "$CHECKS")"
+
+  # a killed gate's temporary log is removed by the next run: there is none to
+  # remove, since a gate keeps its log in memory until it writes the record, so
+  # a gate killed with SIGKILL leaves no file.
+  "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/slow" >|"$GATE_DIR/slow.out" 2>&1 &
+  gate_pid=$!
+  tries=0
+  until grep -q step-started "$GATE_DIR/slow.out"; do
+    tries=$((tries + 1))
+    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$GATE_DIR/slow.out")"
+    sleep 0.1
+  done
+  kill -KILL "$gate_pid"
+  set +e
+  wait "$gate_pid"
+  set -e
+  # Nothing stops the step of a killed gate.
+  pkill -f '^sleep 30[.]4343$' || true
+  test ! -e "$CHECKS" || fail "a killed gate must leave no file: $(ls -A "$CHECKS")"
 ) || exit 1
 
 printf 'test: gate reads .ci-cd.json promotion\n'
