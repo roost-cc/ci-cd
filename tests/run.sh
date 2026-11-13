@@ -739,6 +739,25 @@ EOF
     rm -rf "$RECORD" "$LOG"
   done
 
+  # The log keeps at most 64 MiB, the head, then one line that says it was cut.
+  # A log of a few MB is complete.
+  for size in 68000000 3000000; do
+    printf '{ "version": 1, "project": { "name": "gate-big" }, "actions": { "test": { "commands": ["yes | head -c %s; exit 3"] } } }\n' \
+      "$size" >|"$GATE_DIR/big.json"
+    gate_repo "big$size" "$GATE_DIR/big.json"
+    run_gate "big$size"
+    rm "$GATE_DIR/big$size.out"
+    test "$GATE_CODE" -eq 3 || fail "big$size: the gate must exit 3, got $GATE_CODE"
+    if test "$size" -gt 67108864; then
+      test "$(tail -n 1 "$LOG")" = 'ci-cd: log truncated at 64 MiB' || fail "a cut log must end with the truncation line"
+      test "$(wc -c <"$LOG")" -eq $((67108864 + 32)) || fail "a cut log must be 64 MiB and the line: $(wc -c <"$LOG")"
+    else
+      test "$(grep -c '^y$' "$LOG")" -eq $((size / 2)) || fail "a log of a few MB must be complete"
+      assert_not_contains 'log truncated' "$LOG"
+      assert_contains "$LOG" "gate failed on 'test'"
+    fi
+  done
+
   # An interrupted gate stops its step and writes no record.
   cat >"$GATE_DIR/slow.json" <<'EOF'
 {

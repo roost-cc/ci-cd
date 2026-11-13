@@ -272,7 +272,9 @@ example `.git/ci-cd/checks/<commit>.json` in an ordinary clone:
 - `vulns` is the `ci-cd-vulns/v1` report of the `vulns` step when it ran (see
   [Vulnerability Scan](#vulnerability-scan)), else `null`. When that step
   threw, the report has `status: "error"`.
-- `<commit>.log`, beside the record, holds everything the check printed.
+- `<commit>.log`, beside the record, holds everything the check printed, up
+  to 64 MiB. A longer log keeps its first 64 MiB and ends with the line
+  `ci-cd: log truncated at 64 MiB`.
 - A check that cannot run fails closed: an invalid or malformed
   `.ci-cd.json`, a missing tool and a step that crashes each exit non-zero
   and write a `fail` record. An unknown commit exits non-zero and writes no
