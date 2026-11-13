@@ -4,6 +4,14 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT/tests/assertions.sh"
 
+# The fixtures sit inside this repo's history. Git stops looking at tests/, so
+# here they are not a git checkout; `vulns compares` builds real histories.
+GIT_CEILING_DIRECTORIES=$(CDPATH= cd -- "$ROOT/tests" && pwd -P)
+export GIT_CEILING_DIRECTORIES
+# This suite runs in ci-cd's own pre-push hook, which sets these. A failing gate
+# must not find this clone through them and write a record into its .git.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE PRE_COMMIT_REMOTE_BRANCH PRE_COMMIT_TO_REF
+
 TMP_ROOT=${TMPDIR:-/tmp}/ci-cd-tests.$$
 ARTIFACTS_DIR="$TMP_ROOT/artifacts"
 mkdir -p "$ARTIFACTS_DIR"
@@ -228,7 +236,6 @@ assert_contains /tmp/ci-cd-gate-failing.out "gate failed on 'test'"
 
 printf 'test: gate steps run without the hook GIT_DIR (linked-worktree push)\n'
 (
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   HOOK_DIR="$TMP_ROOT/hook-env"
   mkdir -p "$HOOK_DIR/step-tmp"
   # The step's temp repo goes under TMP_ROOT, so the exit trap removes it.
@@ -273,7 +280,6 @@ printf 'test: gate steps strip each git variable independently\n'
 # Every step of `ci run` and `ci gate` fails if GIT_DIR, GIT_WORK_TREE or
 # GIT_INDEX_FILE reaches it, whether the caller or the action env sets it.
 (
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   STRIP_DIR="$TMP_ROOT/strip-git-vars"
   mkdir -p "$STRIP_DIR"
   probe='for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do if env | grep -q \"^$v=\"; then echo leaked-$v >&2; exit 17; fi; done; echo vars-absent'
@@ -320,7 +326,6 @@ EOF
 
 printf 'test: check runs the gate steps on one commit in a throwaway worktree\n'
 (
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   CHECK_DIR="$TMP_ROOT/check"
   # ci check makes its worktrees here, so a leftover shows.
   CHECK_TMP="$CHECK_DIR/tmp"
@@ -537,8 +542,6 @@ EOF
 
 printf 'test: gate reads .ci-cd.json promotion\n'
 (
-  # This suite may itself run in a pre-push hook, which sets these.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE PRE_COMMIT_REMOTE_BRANCH PRE_COMMIT_TO_REF
   PROMO_DIR="$TMP_ROOT/promotion"
   mkdir -p "$PROMO_DIR"
   gate='--target local --platform linux/amd64'
@@ -657,11 +660,6 @@ assert_contains /tmp/ci-cd-purge-caller.out "ci=false"
 printf 'test: vulns (osv-scanner, faked: no network)\n'
 OSV_PATH="$ROOT/tests/fixtures/osv-tools/bin:$PATH"
 OSV_LOG="$TMP_ROOT/osv.log"
-# The fixtures sit inside this repo's history. Git stops looking at tests/, so
-# here they are not a git checkout; `vulns compares` builds real histories.
-GIT_CEILING_DIRECTORIES=$(CDPATH= cd -- "$ROOT/tests" && pwd -P)
-export GIT_CEILING_DIRECTORIES
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 # Each case gets its own cache with a fresh stamp, so scans run --offline.
 fresh_cache() {
   cache="$TMP_ROOT/cache-$1"
