@@ -723,6 +723,8 @@ EOF
   gate_repo unwritable "$GATE_DIR/exit3.json"
   mkdir -p "$CHECKS"
   for broken in readonly record log; do
+    # root ignores `chmod a-w`.
+    if test "$broken" = readonly && test "$(id -u)" -eq 0; then continue; fi
     case $broken in
       readonly) chmod a-w "$CHECKS" ;;
       record) mkdir "$RECORD" ;;
@@ -786,9 +788,8 @@ EOF
   fi
   test ! -e "$CHECKS" || fail "an interrupted gate must write nothing: $(ls -A "$CHECKS")"
 
-  # a killed gate's temporary log is removed by the next run: there is none to
-  # remove, since a gate keeps its log in memory until it writes the record, so
-  # a gate killed with SIGKILL leaves no file.
+  # a gate killed with SIGKILL leaves no file, since its log stays in memory
+  # until the record is written.
   # A new output file: the background job may truncate slow.out only after the
   # loop below has read the first run's step-started from it.
   "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/slow" >"$GATE_DIR/killed.out" 2>&1 &
