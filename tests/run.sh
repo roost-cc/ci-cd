@@ -703,9 +703,13 @@ EOF
     assert_contains "$GATE_DIR/stays.out" "ci-cd: gate failed; the check record of $head stays (ci check wrote it): "
     assert_no_tmp
   done
-  printf '{ "commit": "%s", "by": "gate", "verdict": "fail", "old": true }\n' "$head" >|"$RECORD"
-  run_gate stays
-  assert_json "$RECORD" "r.by === 'gate' && !('old' in r) && r.steps.length === 2"
+  # A record whose `by` is set and is not `check` is not ci check's: replaced.
+  for by in '"gate"' '"foo"' 'null' '5' '""'; do
+    printf '{ "commit": "%s", "by": %s, "verdict": "fail", "old": true }\n' "$head" "$by" >|"$RECORD"
+    run_gate stays
+    assert_json "$RECORD" "r.by === 'gate' && !('old' in r) && r.steps.length === 2"
+    assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
+  done
   # gate replaces a record file that is not a JSON object.
   for stored in 'not json' '' 'null' '[]' '"x"' '1'; do
     printf '%s\n' "$stored" >|"$RECORD"
@@ -894,10 +898,17 @@ printf 'test: gate reads .ci-cd.json promotion\n'
   assert_refused "$head" "the check record is not for $head" "$head"
   cmp -s "$PROMO_DIR/other.json" "$RECORD" || fail "the gate replaced a record without by"
 
-  # Only a record that ci check wrote promotes.
+  # Only a record that ci check wrote promotes. The gate and promotion agree:
+  # a record that promotion refuses for its `by`, the failing gate replaces.
   printf '{ "commit": "%s", "by": "gate", "verdict": "pass" }\n' "$head" >|"$RECORD"
   push_main "$head"
   assert_refused "$head" "the record of $head was written by ci gate, not ci check" "$head"
+  for by in '"foo"' 'null' '5' '""'; do
+    printf '{ "commit": "%s", "by": %s, "verdict": "pass" }\n' "$head" "$by" >|"$RECORD"
+    push_main "$head"
+    assert_refused "$head" "the record of $head was written by ci " "$head"
+    assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 0 && r.exit_code === 1"
+  done
 
   printf 'not json\n' >|"$RECORD"
   push_main "$head"
