@@ -687,6 +687,13 @@ printf 'test: gate leaves a record when it fails\n'
   run_gate stays
   assert_json "$RECORD" "r.by === 'gate' && r.steps.length === 2"
   assert_not_contains 'the check record of' "$GATE_DIR/stays.out"
+  # A record that cannot be written (a directory holds its name) leaves no temporary file.
+  rm "$RECORD"
+  mkdir "$RECORD"
+  run_gate stays
+  test "$GATE_CODE" -ne 0 || fail "the gate must still fail"
+  assert_no_tmp
+  rmdir "$RECORD"
 
   # An interrupted gate stops its step and writes no record.
   cat >"$GATE_DIR/slow.json" <<'EOF'
