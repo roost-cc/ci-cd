@@ -613,7 +613,15 @@ printf 'test: gate leaves a record when it fails\n'
   assert_contains "$LOG" "gate-ran-lint"
   assert_contains "$GATE_DIR/failing.out" "ci-cd: gate fail: "
   assert_no_tmp
-  FAIL_CODE=$GATE_CODE
+  # A failing step that exits 3, so a test can tell the step's exit code from
+  # the 1 of a gate that failed by itself.
+  cat >"$GATE_DIR/exit3.json" <<'EOF'
+{
+  "version": 1,
+  "project": { "name": "gate-exit3" },
+  "actions": { "lint": { "commands": ["echo gate-ran-lint"] }, "test": { "commands": ["exit 3"] } }
+}
+EOF
 
   # A passing gate writes nothing, not even the checks directory.
   gate_repo passing "$ROOT/tests/fixtures/gate-lint-and-test/.ci-cd.json"
@@ -627,10 +635,10 @@ printf 'test: gate leaves a record when it fails\n'
   run_gate passing
   test "$GATE_CODE" -eq 0 || fail "a passing gate must exit 0 without a checks directory: $(cat "$GATE_DIR/passing.out")"
   assert_not_contains '^\s+at ' "$GATE_DIR/passing.out"
-  gate_repo nodir "$ROOT/tests/fixtures/gate-failing/.ci-cd.json"
+  gate_repo nodir "$GATE_DIR/exit3.json"
   : >"$GATE_DIR/nodir/.git/ci-cd"
   run_gate nodir
-  test "$GATE_CODE" -eq "$FAIL_CODE" || fail "the gate must exit $FAIL_CODE, got $GATE_CODE: $(cat "$GATE_DIR/nodir.out")"
+  test "$GATE_CODE" -eq 3 || fail "the gate must exit 3, got $GATE_CODE: $(cat "$GATE_DIR/nodir.out")"
   assert_contains "$GATE_DIR/nodir.out" "gate-ran-lint"
   assert_contains "$GATE_DIR/nodir.out" "ci-cd: gate wrote no record: "
   assert_not_contains '^\s+at ' "$GATE_DIR/nodir.out"
@@ -708,19 +716,20 @@ printf 'test: gate leaves a record when it fails\n'
   # gate keeps the step's exit code when the record cannot be written (a
   # read-only checks directory, a directory that holds the record's or the
   # log's name), and leaves no temporary file.
-  rm "$RECORD" "$LOG"
+  gate_repo unwritable "$GATE_DIR/exit3.json"
+  mkdir -p "$CHECKS"
   for broken in readonly record log; do
     case $broken in
       readonly) chmod a-w "$CHECKS" ;;
       record) mkdir "$RECORD" ;;
       log) mkdir "$LOG" ;;
     esac
-    run_gate stays
+    run_gate unwritable
     chmod u+w "$CHECKS"
-    test "$GATE_CODE" -eq "$FAIL_CODE" || fail "$broken: the gate must exit $FAIL_CODE, got $GATE_CODE: $(cat "$GATE_DIR/stays.out")"
-    assert_contains "$GATE_DIR/stays.out" "gate-ran-lint"
-    assert_contains "$GATE_DIR/stays.out" "ci-cd: gate wrote no record: "
-    assert_not_contains '^\s+at ' "$GATE_DIR/stays.out"
+    test "$GATE_CODE" -eq 3 || fail "$broken: the gate must exit 3, got $GATE_CODE: $(cat "$GATE_DIR/unwritable.out")"
+    assert_contains "$GATE_DIR/unwritable.out" "gate-ran-lint"
+    assert_contains "$GATE_DIR/unwritable.out" "ci-cd: gate wrote no record: "
+    assert_not_contains '^\s+at ' "$GATE_DIR/unwritable.out"
     assert_no_tmp
     test ! -f "$RECORD" || fail "$broken: a gate that says it wrote no record wrote one"
     rm -rf "$RECORD" "$LOG"
@@ -757,12 +766,14 @@ EOF
   # a killed gate's temporary log is removed by the next run: there is none to
   # remove, since a gate keeps its log in memory until it writes the record, so
   # a gate killed with SIGKILL leaves no file.
-  "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/slow" >|"$GATE_DIR/slow.out" 2>&1 &
+  # A new output file: the background job may truncate slow.out only after the
+  # loop below has read the first run's step-started from it.
+  "$ROOT/bin/ci" gate --working-directory "$GATE_DIR/slow" >"$GATE_DIR/killed.out" 2>&1 &
   gate_pid=$!
   tries=0
-  until grep -q step-started "$GATE_DIR/slow.out"; do
+  until grep -q step-started "$GATE_DIR/killed.out" 2>/dev/null; do
     tries=$((tries + 1))
-    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$GATE_DIR/slow.out")"
+    test "$tries" -lt 100 || fail "the slow step did not start: $(cat "$GATE_DIR/killed.out")"
     sleep 0.1
   done
   kill -KILL "$gate_pid"
